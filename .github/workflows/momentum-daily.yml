@@ -33,7 +33,7 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install --quiet yfinance pandas numpy requests lxml
+        run: pip install --quiet -r requirements.txt
 
       # PUBLIC_PORTFOLIO_VALUE is what the published page shows. Keep it a
       # round number: the Pages site has no login, so anything here is visible
