@@ -88,8 +88,11 @@ jobs:
 
       # The real balance lives only in a Secret and only reaches your phone.
       # Secrets are masked in logs; repository variables are not.
+      # A failed notification must not block publishing. The page is the
+      # durable output; the phone message is a convenience on top of it.
       - name: Send to Telegram
         if: success()
+        continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
