@@ -1,0 +1,39 @@
+name: Momentum Backtest (manual)
+
+# Twenty years of prices is a heavy download and the single most likely thing
+# to get the runner rate-limited. It is deliberately NOT on a schedule.
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "Years of history"
+        default: "20"
+      top_n:
+        description: "Positions held"
+        default: "20"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install --quiet yfinance pandas numpy requests lxml
+      - name: Run backtest
+        env:
+          MOMENTUM_HEADLESS: "1"
+          MOMENTUM_YEARS: ${{ inputs.years }}
+          MOMENTUM_TOP_N: ${{ inputs.top_n }}
+        run: python momentum_backtest.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: momentum-backtest-${{ github.run_number }}
+          path: |
+            momentum-backtest.html
+            backtest-payload.json
+          retention-days: 90
