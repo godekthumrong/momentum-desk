@@ -971,8 +971,8 @@ SCRIPT = r"""
     linBtn.setAttribute("aria-pressed", String(!useLog));
     document.querySelector("#equity").closest("section")
       .querySelector(".note").textContent = useLog
-        ? "Logarithmic scale — equal vertical distance means equal percentage change"
-        : "Linear scale — the early years are compressed against the axis";
+        ? "Logarithmic scale \u2014 equal vertical distance means equal percentage change"
+        : "Linear scale \u2014 the early years are compressed against the axis";
     render();
   }
   logBtn.addEventListener("click", function () { setScale(true); });
