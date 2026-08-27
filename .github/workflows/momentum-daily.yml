@@ -1,0 +1,120 @@
+name: Momentum Desk (daily)
+
+on:
+  schedule:
+    # 01:00 UTC = 08:00 Bangkok (Thailand has no DST, so this never drifts).
+    # Tue-Sat, because a US session that closes 20:00-21:00 UTC is only
+    # available the FOLLOWING morning here: Tuesday 08:00 reports Monday's
+    # close, Saturday 08:00 reports Friday's. Five runs, five sessions.
+    - cron: "0 1 * * 2-6"
+  workflow_dispatch:
+
+concurrency:
+  group: momentum-daily
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      as_of: ${{ steps.check.outputs.as_of }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install --quiet yfinance pandas numpy requests lxml
+
+      # PUBLIC_PORTFOLIO_VALUE is what the published page shows. Keep it a
+      # round number: the Pages site has no login, so anything here is visible
+      # to anyone with the URL. Weights are identical at any value.
+      - name: Build dashboard
+        env:
+          MOMENTUM_HEADLESS: "1"
+          MOMENTUM_PORTFOLIO_VALUE: ${{ vars.PUBLIC_PORTFOLIO_VALUE || '100000' }}
+          MOMENTUM_WATCHLIST: ${{ vars.WATCHLIST }}
+        run: python momentum_desk.py
+
+      - name: Check the output is real
+        id: check
+        run: |
+          python - <<'PY'
+          import json, os, sys, pathlib
+          p = json.loads(pathlib.Path("momentum-payload.json").read_text())
+          n = len(p["universe"])
+          as_of = p["meta"]["as_of"]
+          print(f"as_of {as_of} · {n} names · {len(p.get('index',[]))} candles")
+          # a throttled Yahoo response still writes a file; refuse to publish it
+          if n < 400:
+              sys.exit(f"only {n} names ranked - looks like a partial download")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"as_of={as_of}\n")
+          PY
+
+      - name: Assemble the site
+        run: |
+          mkdir -p _site
+          cp momentum-desk.html _site/index.html
+          # the backtest page is optional; publish it when a previous manual
+          # run has committed one
+          [ -f momentum-backtest.html ] && cp momentum-backtest.html _site/backtest.html || true
+          # no Jekyll processing, and keep search engines off it
+          touch _site/.nojekyll
+          printf 'User-agent: *\nDisallow: /\n' > _site/robots.txt
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: momentum-desk-${{ github.run_number }}
+          path: |
+            momentum-desk.html
+            momentum-payload.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      # The real balance lives only in a Secret and only reaches your phone.
+      # Secrets are masked in logs; repository variables are not.
+      - name: Send to Telegram
+        if: success()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NOTIFY_PORTFOLIO_VALUE: ${{ secrets.REAL_PORTFOLIO_VALUE }}
+        run: python notify.py
+
+      - name: Say so if it failed
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ]; then
+            curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+              -d chat_id="$TELEGRAM_CHAT_ID" \
+              -d text="Momentum Desk run failed ($(date -u +%F)). Yahoo may have rate-limited the runner - check the Actions log." \
+              > /dev/null
+          fi
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
