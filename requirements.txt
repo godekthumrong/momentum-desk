@@ -1,0 +1,11 @@
+# Pinned loosely on purpose: yfinance breaks often and a floating version picks
+# up the fix without a commit here. This file also exists so setup-python's
+# `cache: pip` has something to hash — without it the action fails outright.
+yfinance
+pandas
+numpy
+requests
+lxml
+# only momentum_backtest.py needs these, and only as fallback HTML parsers
+beautifulsoup4
+html5lib
