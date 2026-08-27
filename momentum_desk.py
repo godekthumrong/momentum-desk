@@ -18,10 +18,11 @@ SMA_WINDOW      = 200         # เส้นค่าเฉลี่ยบนก
 INDEX_SHOW_BARS = 252         # จำนวนแท่งเทียนที่แสดง (~1 ปี)
 INDEX_FETCH_PERIOD = "2y"     # ดึงยาวกว่าที่แสดง เพื่อให้ SMA ครบตั้งแต่แท่งแรก
 
-MY_WATCHLIST = [
-    "MU", "WDC", "STX", "SNDK", "LRCX", "FIX", "AMAT", "KLAC", "GLW", "COHR",
-    "INTC", "JBHT", "MRVL", "DELL", "AMD", "HUM", "HPE", "DDOG", "FLEX", "PANW",
-]
+# watchlist เริ่มต้น — ค่าที่ปุ่ม "Reset everything to defaults" จะย้อนกลับมา
+#   None      = ใช้หุ้น TOP_N อันดับแรกตาม Quant Score (เปลี่ยนตามข้อมูลทุกวัน)
+#   ใส่ลิสต์เอง = ล็อกรายชื่อไว้ เช่น ["MU", "WDC", "STX"]
+# ตั้งค่า MOMENTUM_WATCHLIST ใน environment จะทับค่าตรงนี้เสมอ
+MY_WATCHLIST = None
 
 OUTPUT_HTML   = "momentum-desk.html"
 OPEN_BROWSER  = True          # เปิดแดชบอร์ดในเบราว์เซอร์เมื่อเสร็จ
@@ -495,7 +496,7 @@ BODY = """
       <div class="panel-head">
         <div>
           <h3>Watchlist portfolio</h3>
-          <p class="panel-desc">Your own names, weighted so lower-volatility positions carry more capital.</p>
+          <p class="panel-desc">Starts as the top-ranked names above &mdash; add or remove any ticker and the weights rebalance. Lower-volatility positions carry more capital.</p>
         </div>
         <div class="stat" id="stat-watch"></div>
       </div>
@@ -1145,9 +1146,26 @@ def size_portfolio(tickers_in, label):
     return out.sort_values("Weight", ascending=False).reset_index(drop=True)
 
 
+
+def _sizeable(t):
+    """A name is usable only if it has both a positive volatility and a price."""
+    return (t in volatility.index and pd.notna(volatility[t]) and volatility[t] > 0
+            and t in latest_price.index and pd.notna(latest_price[t])
+            and latest_price[t] > 0)
+
+
+# MY_WATCHLIST = None means "track the ranking itself". Taking the top TOP_N
+# *sizeable* names (not simply the first TOP_N rows) keeps the default list a
+# full TOP_N long even when a leader is missing a price.
+if MY_WATCHLIST is None:
+    WATCHLIST = [t for t in df_rank["Ticker"] if _sizeable(t)][:TOP_N]
+    print(f"      watchlist เริ่มต้น = top {len(WATCHLIST)} ตามอันดับ momentum")
+else:
+    WATCHLIST = list(MY_WATCHLIST)
+
 rank_lookup = dict(zip(df_rank["Ticker"], df_rank["Rank"]))
 df_top = size_portfolio(df_rank["Ticker"].head(TOP_N).tolist(), "top momentum")
-df_watch = size_portfolio(MY_WATCHLIST, "watchlist")
+df_watch = size_portfolio(WATCHLIST, "watchlist")
 df_watch["Rank"] = df_watch["Ticker"].map(rank_lookup)
 
 # ─── 5. สร้างแดชบอร์ด ─────────────────────────────────────────────────────────
@@ -1175,7 +1193,7 @@ payload = {
         "portfolio_value": float(PORTFOLIO_VALUE),
     },
     "universe": universe_rows,
-    "watchlist": [t for t in MY_WATCHLIST if any(u[0] == t for u in universe_rows)],
+    "watchlist": [t for t in WATCHLIST if any(u[0] == t for u in universe_rows)],
     "index": index_rows,          # [date, open, high, low, close, sma] ต่อวัน
     "sma_window": SMA_WINDOW,
 }
