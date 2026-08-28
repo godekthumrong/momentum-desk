@@ -138,40 +138,36 @@ import yfinance as yf
 import json
 
 CSS = """
-/* Neko cafe — a daytime cat cafe: milk, latte foam, light oak, ginger cat.
-   Committed to a single light treatment; every colour is painted explicitly
-   so the page holds its look on any host background.
-
-   Every value below was measured, not eyeballed.
-   Text (WCAG, vs the card #FFFAF3): ink 13.1 · ink-2 7.1 · muted 5.2 ·
-   link 5.2 · white-on-accent 4.7 — and muted clears 4.5 on the darker page
-   ground too (4.7), which is the tighter of the two.
-   Data marks (>= 3:1 vs what they sit on): bar 3.9 on the card and 3.2 on its
-   own track · up 6.2 · down 3.1 · sma 6.1. */
+/* Claude palette, committed to a single light treatment — every colour is
+   painted explicitly so the page holds its look on any host background.
+   Contrast (WCAG, vs #FAF9F5): ink 17.5 · ink-2 8.7 · muted 4.9 · link 5.8 ·
+   bar 3.1 (clears the 3:1 data-mark gate) · white-on-accent 4.1. */
 :root {
   color-scheme: light;
-  --page:#F6EDE0;        /* latte foam — the room   */
-  --surface:#FFFAF3;     /* fresh milk — cards      */
-  --surface-2:#F2E5D5;   /* steamed milk — inputs, bar track */
-  --surface-3:#E8D8C3;   /* light oak — hover       */
-  --ink:#3B2A21;         /* espresso                */
-  --ink-2:#6A5142;
-  --muted:#7E6555;
-  --grid:#EBDDCB;
-  --border:rgba(59,42,33,0.13);
-  --accent:#AE5D42;      /* roasted caramel — buttons, focus ring */
-  --link:#A2543C;        /* accent as text          */
-  --bar:#B96C33;         /* ginger cat — the data mark */
-  --pill-bg:#F7E3D6; --pill-ink:#9A4E37;
-  --tag-bg:#EFE0BC;  --tag-ink:#6E5426;   /* cat treat */
-  --ok:#2E6B33;      --ok-bg:#E6EFE0;
-  --warn:#8F3016;    --warn-bg:#F8E3D9;
-  /* The three marks that share the index chart are matcha, strawberry milk
-     and taro. Run as a trio through the palette validator on the card
-     surface, all pairs: worst CVD dE 11.5 (protan), worst normal-vision
-     dE 26.2, all three clear 3:1 — every gate passes with room to spare.
-     Candle fill carries direction as well, so colour is never alone. */
-  --up:#2E6B33; --down:#DA7458;
+  --page:#F0EEE6;        /* warm oat ground   */
+  --surface:#FAF9F5;     /* card              */
+  --surface-2:#EDEAE0;   /* input, bar track  */
+  --surface-3:#E3DFD2;   /* hover             */
+  --ink:#141413;
+  --ink-2:#4A4844;
+  --muted:#6F6D66;
+  --grid:#E4E0D4;
+  --border:rgba(20,20,19,0.11);
+  --accent:#C4603C;      /* buttons, focus ring */
+  --link:#A34527;        /* accent as text      */
+  --bar:#CC785C;         /* Book Cloth — the data mark */
+  --pill-bg:#F7E7E0; --pill-ink:#B0522F;
+  --tag-bg:#EBDBBC;  --tag-ink:#6B4F2A;   /* manilla */
+  --ok:#3F6B45;      --ok-bg:#E6EEE4;
+  --warn:#8F3016;    --warn-bg:#F9E5DC;
+  /* candle direction. This pair is the only green/coral combination that
+     cleared CVD separation (protan ΔE 10.8; the obvious alternatives scored
+     3.7–5.8). Fill carries the direction too, so colour is never alone. */
+  --up:#3F6B45; --down:#CC785C;
+  /* SMA overlay. Purple was the only hue family that cleared CVD against
+     both candle colours; this step also clears the chroma floor, which the
+     first plum I tried (#7A5B8F, chroma 0.087) did not. Trio measures:
+     CVD dE 10.8, normal-vision 23.1, all three >= 3:1 on the surface. */
   --sma:#7C46A8;
 }
 
@@ -207,7 +203,7 @@ header.masthead p.sub { color:var(--ink-2); font-size:15px; max-width:54ch; marg
   color:var(--ink-2); background:var(--surface-2); border:1px solid var(--border);
   border-radius:999px; padding:6px 14px; white-space:nowrap;
 }
-.snapshot-badge .paw { width:15px; height:15px; flex:none; fill:var(--accent); }
+.snapshot-badge .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); }
 
 /* ── controls ─────────────────────────────────────────────────── */
 .controls {
@@ -367,7 +363,7 @@ button.remove:hover { background:var(--surface-3); color:var(--link); }
   background:var(--surface); border:1px solid var(--border); border-radius:7px;
   padding:8px 11px; font-family:"IBM Plex Mono", ui-monospace, monospace;
   font-size:11.5px; line-height:1.55; color:var(--ink);
-  box-shadow:0 3px 14px rgba(59,42,33,0.15); white-space:nowrap; z-index:5;
+  box-shadow:0 3px 14px rgba(20,20,19,0.13); white-space:nowrap; z-index:5;
   font-variant-numeric:tabular-nums;
 }
 .chart-tip.on { opacity:1; }
@@ -435,7 +431,7 @@ BODY = """
       <h1>Momentum Desk</h1>
       <p class="sub">S&amp;P 500 names ranked by __LOOKBACK__-day quant momentum score, with a watchlist you edit yourself &mdash; sized by weighting each position inversely to its __VOLWIN__-day volatility.</p>
     </div>
-    <span class="snapshot-badge"><svg class="paw" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="6.2" cy="9.2" rx="2.5" ry="3.3"/><ellipse cx="11.9" cy="6.7" rx="2.6" ry="3.5"/><ellipse cx="17.6" cy="9.2" rx="2.5" ry="3.3"/><path d="M11.9 12.1c3.3 0 5.9 2.3 5.9 4.8 0 2-1.7 3.3-3.9 3.3-1 0-1.4-.3-2-.3s-1 .3-2 .3c-2.2 0-3.9-1.3-3.9-3.3 0-2.5 2.6-4.8 5.9-4.8z"/></svg>Snapshot &middot; __ASOF__ close</span>
+    <span class="snapshot-badge"><span class="dot"></span>Snapshot &middot; __ASOF__ close</span>
   </header>
 
   <div class="controls">
