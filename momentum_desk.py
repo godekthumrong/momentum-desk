@@ -441,6 +441,38 @@ button.remove:hover { background:var(--surface-3); color:var(--link); }
 .panel .table-scroll td, .panel .table-scroll th { padding:8px 11px; }
 .panel .barchart { margin-bottom:0; }
 
+/* ── the rules ────────────────────────────────────────────────── */
+.rules-card {
+  border:1px solid var(--border); border-radius:10px;
+  background:var(--surface); padding:22px 24px 18px;
+}
+.rules-grid { display:grid; grid-template-columns:0.9fr 1.1fr; gap:30px; align-items:start; }
+.rules-grid > * { min-width:0; }
+@media (max-width:900px) { .rules-grid { grid-template-columns:1fr; gap:20px; } }
+
+.rules-lede { margin:0; font-size:14.5px; line-height:1.6; color:var(--ink-2); }
+.rules-lede strong { color:var(--ink); font-weight:600; }
+
+.rules-list { list-style:none; counter-reset:rule; margin:0; padding:0; }
+.rules-list li {
+  counter-increment:rule; position:relative; padding-left:40px;
+  margin-bottom:11px; font-size:13.5px; line-height:1.5; color:var(--ink-2);
+}
+.rules-list li:last-child { margin-bottom:0; }
+.rules-list li::before {
+  content:counter(rule, decimal-leading-zero);
+  position:absolute; left:0; top:-1px;
+  display:inline-flex; align-items:center; justify-content:center;
+  width:26px; height:26px; border-radius:50%;
+  background:var(--pill-bg); color:var(--pill-ink);
+  font-family:"IBM Plex Mono", ui-monospace, monospace;
+  font-size:11.5px; font-weight:600;
+}
+.rules-note {
+  font-size:12px; color:var(--muted); margin:18px 0 0;
+  padding-top:14px; border-top:1px solid var(--grid); max-width:88ch;
+}
+
 /* ── backtest snapshot ────────────────────────────────────────── */
 .bt-card {
   border:1px solid var(--border); border-radius:10px;
@@ -603,6 +635,37 @@ BODY = """
           </table>
         </div>
       </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>The momentum effect</h2>
+      <span class="note">The rules this desk is built around</span>
+    </div>
+    <div class="rules-card">
+      <div class="rules-grid">
+        <p class="rules-lede">When a stock has been going up for a while, the likelihood
+          of it continuing up is greater than for it to turn around. A stock which is
+          moving up faster than other stocks is likely to continue to move up faster than
+          other stocks. <strong>This, in essence, is the momentum effect.</strong></p>
+        <ol class="rules-list">
+          <li>Trading is only done monthly.</li>
+          <li>Only stocks in the S&amp;P 500.</li>
+          <li>The top 20 stocks are selected.</li>
+          <li>Weight is calculated for those 20 by inverse volatility.</li>
+          <li>While the S&amp;P 500 index is under its 200-day moving average, no new buys.</li>
+          <li>Sell a stock when it drops out of the top 100.</li>
+          <li>Rebalance every month.</li>
+        </ol>
+      </div>
+      <p class="rules-note">This page is the monthly decision laid out, not an account of
+        one. It shows today&rsquo;s ranking, today&rsquo;s inverse-volatility weights, and
+        whether rule 5 currently allows buying &mdash; that is the &ldquo;vs SMA 200&rdquo;
+        reading on the chart above.
+        Rules 1, 6 and 7 play out across time, so it is the backtest below that actually
+        enforces them. The &ldquo;ranking depth&rdquo; control at the top changes only how
+        many rows the table shows; it does not change the rules.</p>
     </div>
   </section>
 
