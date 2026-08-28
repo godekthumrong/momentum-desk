@@ -27,6 +27,11 @@ MY_WATCHLIST = None
 OUTPUT_HTML   = "momentum-desk.html"
 OPEN_BROWSER  = True          # เปิดแดชบอร์ดในเบราว์เซอร์เมื่อเสร็จ
 COPY_JSON     = True          # copy JSON ลง clipboard เพื่อส่งกลับให้ Claude
+
+# การ์ดสรุปผล backtest บนแดชบอร์ด — จะขึ้นก็ต่อเมื่อมีไฟล์นี้อยู่จริง
+# ไม่มีไฟล์ = ไม่มีการ์ด (ไม่ทำลิงก์ตายทิ้งไว้)
+BACKTEST_JSON = "backtest-payload.json"
+BACKTEST_HREF = "momentum-backtest.html"   # ชื่อไฟล์ที่ลิงก์ไปหา
 # ═════════════════════════════════════════════════════════════════════════════
 
 # ── environment overrides (สำหรับรันบนคลาวด์/CI ที่ไม่มีจอและไม่มี clipboard) ──
@@ -36,6 +41,9 @@ if _os.environ.get("MOMENTUM_HEADLESS"):
     COPY_JSON = False
 if _os.environ.get("MOMENTUM_PORTFOLIO_VALUE"):
     PORTFOLIO_VALUE = float(_os.environ["MOMENTUM_PORTFOLIO_VALUE"])
+if _os.environ.get("MOMENTUM_BACKTEST_HREF"):
+    # บนคลาวด์ไฟล์ถูกเปลี่ยนชื่อเป็น backtest.html ตอนวางลง _site
+    BACKTEST_HREF = _os.environ["MOMENTUM_BACKTEST_HREF"]
 if _os.environ.get("MOMENTUM_WATCHLIST"):
     MY_WATCHLIST = [t.strip().upper() for t in
                     _os.environ["MOMENTUM_WATCHLIST"].replace(",", " ").split() if t.strip()]
@@ -175,6 +183,10 @@ CSS = """
      Candle fill carries direction as well, so colour is never alone. */
   --up:#2E7BF6; --down:#DE4F45;
   --sma:#158C7B;
+  /* the backtest snapshot's two lines. Same blue and red as the candles, but
+     named for their own job so the two charts can drift apart later without
+     one quietly repainting the other. */
+  --bt-strategy:#2E7BF6; --bt-bench:#DE4F45;
 }
 
 * { box-sizing: border-box; }
@@ -429,6 +441,64 @@ button.remove:hover { background:var(--surface-3); color:var(--link); }
 .panel .table-scroll td, .panel .table-scroll th { padding:8px 11px; }
 .panel .barchart { margin-bottom:0; }
 
+/* ── backtest snapshot ────────────────────────────────────────── */
+.bt-card {
+  border:1px solid var(--border); border-radius:10px;
+  background:var(--surface); padding:20px 22px 16px;
+}
+.bt-head {
+  display:flex; justify-content:space-between; align-items:flex-start;
+  gap:16px; flex-wrap:wrap; margin-bottom:16px;
+}
+.bt-head h3 {
+  font-family:"IBM Plex Sans Condensed", system-ui, sans-serif;
+  font-size:16.5px; font-weight:650; margin:0 0 4px;
+}
+.bt-head .range {
+  font-family:"IBM Plex Mono", ui-monospace, monospace;
+  font-size:12.5px; color:var(--muted);
+}
+a.bt-open {
+  display:inline-flex; align-items:center; gap:7px; white-space:nowrap;
+  font-family:"IBM Plex Sans", system-ui, sans-serif;
+  font-size:13px; font-weight:600; color:#fff;
+  background:var(--accent); border:1px solid var(--accent);
+  border-radius:6px; padding:8px 15px; text-decoration:none;
+}
+a.bt-open:hover { filter:brightness(1.08); }
+a.bt-open:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+.bt-grid { display:grid; grid-template-columns:1.4fr 1fr; gap:26px; align-items:start; }
+/* A grid item defaults to min-width:auto, so it refuses to shrink below its
+   content — and the sparkline's <svg> carries an explicit width attribute.
+   Without this the column stayed 588px wide inside a 400px viewport, the
+   ResizeObserver never fired because the host never actually changed size,
+   and the whole page scrolled sideways. */
+.bt-grid > * { min-width:0; }
+@media (max-width:900px) { .bt-grid { grid-template-columns:1fr; gap:20px; } }
+
+.bt-legend i.s { border-color:var(--bt-strategy); }
+.bt-legend i.b { border-color:var(--bt-bench); }
+.bt-legend i {
+  display:inline-block; width:16px; height:0; border-top:2.5px solid;
+  margin-right:7px; vertical-align:4px;
+}
+
+.bt-stats {
+  display:grid; grid-template-columns:repeat(2,1fr); gap:1px;
+  background:var(--border); border:1px solid var(--border);
+  border-radius:8px; overflow:hidden;
+}
+.bt-stat { background:var(--surface); padding:13px 15px; }
+.bt-stat .k { display:block; font-size:11.5px; color:var(--muted); margin-bottom:4px; }
+.bt-stat .v {
+  font-family:"IBM Plex Mono", ui-monospace, monospace;
+  font-size:19px; font-weight:600; font-variant-numeric:tabular-nums;
+}
+.bt-stat .v.good { color:var(--ok); }
+.bt-stat .v.bad  { color:var(--warn); }
+.bt-note { font-size:12px; color:var(--muted); margin:14px 0 0; max-width:80ch; }
+
 footer {
   border-top:1px solid var(--border); padding-top:20px; margin-top:12px;
   font-size:12.5px; color:var(--muted); max-width:78ch;
@@ -533,6 +603,36 @@ BODY = """
           </table>
         </div>
       </div>
+    </div>
+  </section>
+
+  <section id="bt-section" hidden>
+    <div class="section-head">
+      <h2>Backtest snapshot</h2>
+      <span class="note" id="bt-sub"></span>
+    </div>
+    <div class="bt-card">
+      <div class="bt-head">
+        <div>
+          <h3 id="bt-title"></h3>
+          <div class="range" id="bt-range"></div>
+        </div>
+        <a class="bt-open" id="bt-open" href="#">Open the full report &rarr;</a>
+      </div>
+      <div class="bt-grid">
+        <div>
+          <div class="chart-legend bt-legend" style="margin-bottom:9px">
+            <span><i class="s"></i>Strategy, after costs</span>
+            <span><i class="b"></i>S&amp;P 500 total return</span>
+          </div>
+          <div class="chart-wrap">
+            <div id="bt-spark"></div>
+            <div class="chart-tip" id="bt-tip"></div>
+          </div>
+        </div>
+        <div class="bt-stats" id="bt-stats"></div>
+      </div>
+      <p class="bt-note" id="bt-note"></p>
     </div>
   </section>
 
@@ -959,6 +1059,183 @@ SCRIPT = r"""
     }
   }
 
+  // ── backtest snapshot ─────────────────────────────────────────
+  // A teaser, not a second report: four numbers and a growth-of-$1 sparkline,
+  // with the full interactive report one click away. It renders only when the
+  // build actually found a backtest payload, so this never leaves a dead link
+  // on the page.
+  var BT = D.backtest || null;
+  if (BT) {
+    document.getElementById("bt-section").hidden = false;
+    document.getElementById("bt-title").textContent = BT.label;
+    document.getElementById("bt-sub").textContent =
+      BT.years.toFixed(1) + " years · monthly rebalance" +
+      (BT.cost_bps != null ? " · " + BT.cost_bps + " bps costs" : "");
+    document.getElementById("bt-range").textContent = BT.from + "  to  " + BT.to;
+    document.getElementById("bt-open").setAttribute("href", BT.href);
+
+    var edge = BT.cagr - BT.bench_cagr;
+    document.getElementById("bt-stats").innerHTML = [
+      {k:"Strategy CAGR", v:pct(BT.cagr * 100)},
+      {k:"S&P 500 CAGR", v:pct(BT.bench_cagr * 100)},
+      {k:"Difference per year", v:(edge >= 0 ? "+" : "") + pct(edge * 100),
+       cls:edge >= 0 ? "good" : "bad"},
+      {k:"Worst drawdown", v:(BT.max_dd * 100).toFixed(0) + "%", cls:"bad"}
+    ].map(function (s) {
+      return '<div class="bt-stat"><span class="k">' + esc(s.k) + '</span>' +
+             '<span class="v ' + (s.cls || "") + '">' + esc(s.v) + '</span></div>';
+    }).join("");
+
+    document.getElementById("bt-note").textContent =
+      "One historical path, not a forecast. The full report carries the " +
+      "survivorship-bias caveat, the cost and tax assumptions, and what the " +
+      "test cannot tell you — read it before trusting these four numbers.";
+
+    var SP = BT.series;
+    var spHost = document.getElementById("bt-spark");
+    var spTip = document.getElementById("bt-tip");
+    var spGeom = null;
+
+    function spTicks(lo, hi) {
+      var out = [];
+      var e0 = Math.floor(Math.log(Math.max(lo, 1e-9)) / Math.LN10);
+      var e1 = Math.ceil(Math.log(hi) / Math.LN10);
+      for (var e = e0; e <= e1; e++) {
+        [1, 2, 5].forEach(function (m) {
+          var v = m * Math.pow(10, e);
+          if (v >= lo && v <= hi) out.push(v);
+        });
+      }
+      while (out.length > 4) out = out.filter(function (v, i) { return i % 2 === 0; });
+      return out.length ? out : [lo, hi];
+    }
+
+    function drawSpark() {
+      var n = SP.dates.length;
+      if (!n || !spHost) return;
+      var W = Math.max(spHost.clientWidth || 620, 260);
+      var H = W < 520 ? 150 : 180;
+      var M = {t:8, r:46, b:20, l:2};
+      var pw = W - M.l - M.r, ph = H - M.t - M.b;
+
+      var lo = Infinity, hi = -Infinity;
+      [SP.net, SP.bench].forEach(function (arr) {
+        arr.forEach(function (v) {
+          if (v == null || !isFinite(v)) return;
+          if (v < lo) lo = v;
+          if (v > hi) hi = v;
+        });
+      });
+      if (!isFinite(lo) || !isFinite(hi)) return;
+      // Log scale, padded IN LOG SPACE. Padding a log axis linearly is what
+      // once drove the lower bound negative and squashed the curve into the
+      // top of the plot; the same mistake is one line away here.
+      lo = Math.max(lo, 1e-9);
+      var la = Math.log(lo), lb = Math.log(hi);
+      var pad = (lb - la) * 0.08 || 0.12;
+      var tlo = la - pad, thi = lb + pad;
+      var y = function (v) {
+        return M.t + (thi - Math.log(Math.max(v, 1e-9))) / (thi - tlo) * ph;
+      };
+      var x = function (i) { return M.l + (n < 2 ? pw / 2 : i / (n - 1) * pw); };
+
+      var s = ['<svg viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H +
+               '" role="img" aria-label="Growth of one dollar, strategy against the ' +
+               'S&P 500, logarithmic scale">'];
+
+      spTicks(Math.exp(tlo), Math.exp(thi)).forEach(function (v) {
+        var yy = y(v);
+        if (yy < M.t - 1 || yy > M.t + ph + 1) return;
+        s.push('<line x1="' + M.l + '" x2="' + (M.l + pw) + '" y1="' + yy.toFixed(1) +
+               '" y2="' + yy.toFixed(1) + '" stroke="var(--grid)" stroke-width="1"/>');
+        s.push('<text x="' + (M.l + pw + 7) + '" y="' + yy.toFixed(1) + '" dy="3.5" ' +
+               'fill="var(--muted)" font-size="10.5" ' +
+               'font-family="IBM Plex Mono, monospace">$' +
+               (v >= 1 ? v.toLocaleString("en-US", {maximumFractionDigits:0}) : v.toFixed(2)) +
+               '</text>');
+      });
+
+      var seenYear = "";
+      SP.dates.forEach(function (d, i) {
+        var yr = d.slice(0, 4);
+        if (yr === seenYear) return;
+        seenYear = yr;
+        if (i === 0) return;
+        if (n > 40 && (+yr) % (W < 520 ? 5 : 2)) return;
+        s.push('<text x="' + x(i).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="middle" ' +
+               'fill="var(--muted)" font-size="10.5" ' +
+               'font-family="IBM Plex Mono, monospace">' + yr + '</text>');
+      });
+
+      [{v:SP.bench, c:"var(--bt-bench)"}, {v:SP.net, c:"var(--bt-strategy)"}].forEach(function (ser) {
+        var pts = [];
+        ser.v.forEach(function (val, i) {
+          if (val == null || !isFinite(val)) return;
+          pts.push(x(i).toFixed(1) + "," + y(val).toFixed(1));
+        });
+        if (pts.length < 2) return;
+        s.push('<polyline points="' + pts.join(" ") + '" fill="none" stroke="' + ser.c +
+               '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>');
+      });
+
+      s.push('<line id="bt-guide" y1="' + M.t + '" y2="' + (M.t + ph) +
+             '" stroke="var(--ink-2)" stroke-width="1" opacity="0"/>');
+      s.push('</svg>');
+      spHost.innerHTML = s.join("");
+      spGeom = {M:M, pw:pw, n:n, W:W, H:H, x:x, y:y};
+    }
+
+    function spMove(clientX) {
+      if (!spGeom) return;
+      var rect = spHost.getBoundingClientRect();
+      var frac = (clientX - rect.left - spGeom.M.l) / spGeom.pw;
+      var i = Math.round(frac * (spGeom.n - 1));
+      i = Math.max(0, Math.min(spGeom.n - 1, i));
+      spTip.innerHTML = "<b>" + SP.dates[i] + "</b>" +
+        "<u>Strategy</u>" + money(SP.net[i]) +
+        "<br><u>S&amp;P 500</u>" + money(SP.bench[i]);
+      spTip.classList.add("on");
+      var g = document.getElementById("bt-guide");
+      if (g) { g.setAttribute("x1", spGeom.x(i)); g.setAttribute("x2", spGeom.x(i));
+               g.setAttribute("opacity", "0.28"); }
+      var tw = spTip.offsetWidth, th = spTip.offsetHeight;
+      var left = spGeom.x(i) + 14;
+      if (left + tw > spGeom.W) left = spGeom.x(i) - tw - 14;
+      spTip.style.left = Math.max(0, left) + "px";
+      spTip.style.top = Math.max(0, Math.min(spGeom.H - th, spGeom.M.t + 4)) + "px";
+    }
+
+    function spHide() {
+      spTip.classList.remove("on");
+      spTip.style.left = "0px";
+      spTip.style.top = "0px";
+      var g = document.getElementById("bt-guide");
+      if (g) g.setAttribute("opacity", "0");
+    }
+
+    spHost.addEventListener("mousemove", function (e) { spMove(e.clientX); });
+    spHost.addEventListener("mouseleave", spHide);
+    spHost.addEventListener("touchmove", function (e) {
+      if (e.touches[0]) spMove(e.touches[0].clientX);
+    }, {passive:true});
+    spHost.addEventListener("touchend", spHide);
+
+    drawSpark();
+    // same width guard as the index chart: drawSpark replaces the element the
+    // observer watches, so without it every render retriggers the observer
+    var spRt = null, spW = spHost.clientWidth;
+    if (window.ResizeObserver) {
+      new ResizeObserver(function () {
+        if (spHost.clientWidth === spW) return;
+        spW = spHost.clientWidth;
+        clearTimeout(spRt);
+        spRt = setTimeout(function () {
+          spW = spHost.clientWidth; spHide(); drawSpark();
+        }, 120);
+      }).observe(spHost);
+    }
+  }
+
   // ── init ──────────────────────────────────────────────────────
   document.getElementById("ticker-list").innerHTML =
     ALL.map(function (r) { return '<option value="' + esc(r.ticker) + '"></option>'; }).join("");
@@ -1200,6 +1477,63 @@ for r in df_rank.itertuples():
                           round(float(volatility[t]), 6),
                           round(float(latest_price[t]), 4)])
 
+def load_backtest(path, href, points=160):
+    """Fold a backtest report down to a card-sized summary, or None.
+
+    Only the FIRST run is used. run_all drops the survivorship-biased run by
+    default, so run 0 is the point-in-time one whenever it exists — quoting
+    the flattering number on the dashboard would be the worst possible
+    default. The daily series is thinned to `points` samples: the dashboard
+    only needs a shape, and the full-resolution curve is one click away.
+
+    Any missing or malformed piece returns None, which hides the card
+    entirely. A card that renders with holes in it is worse than no card.
+    """
+    try:
+        raw = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    runs = raw.get("runs") or []
+    if not runs:
+        return None
+    r = runs[0]
+    m = r.get("metrics") or {}
+    bm = r.get("bench_metrics") or {}
+    dates = r.get("dates") or []
+    net = r.get("net") or []
+    bench = r.get("bench") or []
+
+    if not dates or len(net) != len(dates) or len(bench) != len(dates):
+        return None
+    if any(m.get(k) is None for k in ("cagr", "max_drawdown", "years")):
+        return None
+    if bm.get("cagr") is None:
+        return None
+
+    step = max(1, len(dates) // points)
+    idx = list(range(0, len(dates), step))
+    if idx[-1] != len(dates) - 1:
+        idx.append(len(dates) - 1)
+
+    return {
+        "href": href,
+        "label": r.get("label") or "Backtest",
+        "from": dates[0],
+        "to": dates[-1],
+        "years": round(float(m["years"]), 2),
+        "cost_bps": (raw.get("meta") or {}).get("cost_bps"),
+        "cagr": round(float(m["cagr"]), 5),
+        "bench_cagr": round(float(bm["cagr"]), 5),
+        "max_dd": round(float(m["max_drawdown"]), 5),
+        "series": {
+            "dates": [dates[i] for i in idx],
+            "net": [round(float(net[i]), 4) for i in idx],
+            "bench": [round(float(bench[i]), 4) for i in idx],
+        },
+    }
+
+
 payload = {
     "meta": {
         "as_of": AS_OF, "lookback": LOOKBACK_DAYS, "vol_window": VOL_WINDOW,
@@ -1211,6 +1545,15 @@ payload = {
     "index": index_rows,          # [date, open, high, low, close, sma] ต่อวัน
     "sma_window": SMA_WINDOW,
 }
+
+_bt = load_backtest(BACKTEST_JSON, BACKTEST_HREF)
+if _bt:
+    payload["backtest"] = _bt
+    print(f"      แนบการ์ด backtest: {_bt['from']} ถึง {_bt['to']}, "
+          f"CAGR {_bt['cagr']*100:.1f}% vs {_bt['bench_cagr']*100:.1f}% "
+          f"({len(_bt['series']['dates'])} จุด) -> {_bt['href']}")
+else:
+    print(f"      (ไม่มี {BACKTEST_JSON} — ข้ามการ์ด backtest ไป)")
 
 html = build_dashboard(payload, standalone=True)
 out_path = os.path.abspath(OUTPUT_HTML)
