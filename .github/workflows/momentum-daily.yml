@@ -49,6 +49,9 @@ jobs:
           MOMENTUM_HEADLESS: "1"
           MOMENTUM_PORTFOLIO_VALUE: ${{ vars.PUBLIC_PORTFOLIO_VALUE || '100000' }}
           MOMENTUM_WATCHLIST: ${{ vars.WATCHLIST }}
+          # on the site the report is served as backtest.html (see "Assemble
+          # the site" below), so the snapshot card must link to that name
+          MOMENTUM_BACKTEST_HREF: backtest.html
         run: python momentum_desk.py
 
       - name: Check the output is real
