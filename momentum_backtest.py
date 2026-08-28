@@ -368,18 +368,25 @@ def month_end_dates(index, start=None):
 import json
 
 CSS = """
+/* Neko cafe — same daytime cat-cafe palette as the dashboard, so the two
+   pages read as one product. Marks measured, not eyeballed: the three lines
+   that share the equity chart (matcha / taro / strawberry milk) run through
+   the palette validator as a trio, all pairs, on the card surface —
+   worst CVD dE 11.5, worst normal-vision dE 26.2, all three clear 3:1.
+   Text: ink 13.1 · ink-2 7.1 · muted 5.2 on the card; pos 6.2, neg 7.8. */
 :root {
   color-scheme: light;
-  --page:#F0EEE6; --surface:#FAF9F5; --surface-2:#EDEAE0; --surface-3:#E3DFD2;
-  --ink:#141413; --ink-2:#4A4844; --muted:#6F6D66;
-  --grid:#E4E0D4; --border:rgba(20,20,19,0.11);
-  --accent:#C4603C; --link:#A34527;
-  --strategy:#CC785C;   /* net equity curve */
-  --bench:#7C46A8;      /* benchmark — CVD dE 16.5 from the strategy hue */
-  --gross:#C9B79A;      /* gross, deliberately recessive */
-  --ok:#3F6B45; --ok-bg:#E6EEE4;
-  --warn:#8F3016; --warn-bg:#F9E5DC;
-  --tag-bg:#EBDBBC; --tag-ink:#6B4F2A;
+  --page:#F6EDE0; --surface:#FFFAF3; --surface-2:#F2E5D5; --surface-3:#E8D8C3;
+  --ink:#3B2A21; --ink-2:#6A5142; --muted:#7E6555;
+  --grid:#EBDDCB; --border:rgba(59,42,33,0.13);
+  --accent:#AE5D42; --link:#A2543C;
+  --strategy:#2E6B33;   /* matcha — the net equity curve, the hero line */
+  --bench:#7C46A8;      /* taro — the benchmark */
+  --gross:#DA7458;      /* strawberry milk — gross, and dashed as well, which
+                           is what lets it sit beside the hero line safely */
+  --ok:#2E6B33; --ok-bg:#E6EFE0;
+  --warn:#8F3016; --warn-bg:#F8E3D9;
+  --tag-bg:#EFE0BC; --tag-ink:#6E5426;
 }
 * { box-sizing:border-box; }
 html, body { margin:0; padding:0; }
@@ -492,7 +499,7 @@ section { margin-bottom:34px; }
   position:absolute; pointer-events:none; opacity:0; transition:opacity .12s;
   background:var(--surface); border:1px solid var(--border); border-radius:7px;
   padding:8px 11px; font-family:"IBM Plex Mono", ui-monospace, monospace;
-  font-size:11.5px; line-height:1.6; box-shadow:0 3px 14px rgba(20,20,19,.13);
+  font-size:11.5px; line-height:1.6; box-shadow:0 3px 14px rgba(59,42,33,.15);
   white-space:nowrap; z-index:5; font-variant-numeric:tabular-nums;
 }
 .tip.on { opacity:1; }
