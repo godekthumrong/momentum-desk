@@ -368,18 +368,24 @@ def month_end_dates(index, start=None):
 import json
 
 CSS = """
+/* Blue SaaS — the same palette as the dashboard, so the two pages read as
+   one product. The three lines that share the equity chart (blue / red /
+   teal) run through the palette validator as a trio, all pairs, on the white
+   sheet: worst CVD dE 9.1, worst normal-vision dE 20.9, all three clear 3:1.
+   Text on the sheet: ink 14.3 · ink-2 7.2 · muted 5.4 · pos 6.4 · neg 6.3. */
 :root {
   color-scheme: light;
-  --page:#F0EEE6; --surface:#FAF9F5; --surface-2:#EDEAE0; --surface-3:#E3DFD2;
-  --ink:#141413; --ink-2:#4A4844; --muted:#6F6D66;
-  --grid:#E4E0D4; --border:rgba(20,20,19,0.11);
-  --accent:#C4603C; --link:#A34527;
-  --strategy:#CC785C;   /* net equity curve */
-  --bench:#7C46A8;      /* benchmark — CVD dE 16.5 from the strategy hue */
-  --gross:#C9B79A;      /* gross, deliberately recessive */
-  --ok:#3F6B45; --ok-bg:#E6EEE4;
-  --warn:#8F3016; --warn-bg:#F9E5DC;
-  --tag-bg:#EBDBBC; --tag-ink:#6B4F2A;
+  --page:#EAF2FE; --surface:#FFFFFF; --surface-2:#EEF3FC; --surface-3:#E0EAFA;
+  --ink:#1F2A44; --ink-2:#4A5872; --muted:#5F6B85;
+  --grid:#E8EEF7; --border:rgba(31,42,68,0.10);
+  --accent:#1F6FE5; --link:#1C64D8;
+  --strategy:#2E7BF6;   /* the net equity curve, the hero line */
+  --bench:#DE4F45;      /* the benchmark */
+  --gross:#158C7B;      /* gross, and dashed as well, which is what lets it
+                           sit beside the hero line safely */
+  --ok:#0F6B5C; --ok-bg:#E3F5F1;
+  --warn:#B03327; --warn-bg:#FDEAE8;
+  --tag-bg:#E1F5F0; --tag-ink:#0F6B5C;
 }
 * { box-sizing:border-box; }
 html, body { margin:0; padding:0; }
@@ -388,7 +394,15 @@ body {
   font-family:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   -webkit-font-smoothing:antialiased;
 }
-.wrap { max-width:1180px; margin:0 auto; padding:40px 24px 80px; }
+/* The report floats on a white sheet over the blue ground, and keeps a side
+   gap on narrow screens where auto margins cannot give one. */
+.wrap {
+  max-width:1180px; margin:26px auto; padding:38px 32px 56px;
+  background:var(--surface); border-radius:20px;
+  box-shadow:0 10px 34px rgba(31,42,68,0.09), 0 1px 3px rgba(31,42,68,0.05);
+}
+@media (max-width:1240px) { .wrap { margin:22px 18px; } }
+@media (max-width:640px)  { .wrap { margin:12px 10px; padding:24px 16px 40px; border-radius:14px; } }
 
 .eyebrow {
   font-family:"IBM Plex Sans Condensed", system-ui, sans-serif;
@@ -407,7 +421,7 @@ header.masthead p { color:var(--ink-2); font-size:15px; max-width:66ch; margin:0
 
 /* the caveat is the most important thing on the page — it leads */
 .caveat {
-  border:1px solid rgba(143,48,22,0.28); background:var(--warn-bg);
+  border:1px solid rgba(176,51,39,0.26); background:var(--warn-bg);
   border-radius:10px; padding:16px 20px; margin-bottom:30px;
 }
 .caveat h2 {
@@ -492,7 +506,7 @@ section { margin-bottom:34px; }
   position:absolute; pointer-events:none; opacity:0; transition:opacity .12s;
   background:var(--surface); border:1px solid var(--border); border-radius:7px;
   padding:8px 11px; font-family:"IBM Plex Mono", ui-monospace, monospace;
-  font-size:11.5px; line-height:1.6; box-shadow:0 3px 14px rgba(20,20,19,.13);
+  font-size:11.5px; line-height:1.6; box-shadow:0 6px 20px rgba(31,42,68,.14);
   white-space:nowrap; z-index:5; font-variant-numeric:tabular-nums;
 }
 .tip.on { opacity:1; }
