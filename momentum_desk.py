@@ -138,37 +138,43 @@ import yfinance as yf
 import json
 
 CSS = """
-/* Claude palette, committed to a single light treatment — every colour is
-   painted explicitly so the page holds its look on any host background.
-   Contrast (WCAG, vs #FAF9F5): ink 17.5 · ink-2 8.7 · muted 4.9 · link 5.8 ·
-   bar 3.1 (clears the 3:1 data-mark gate) · white-on-accent 4.1. */
+/* Blue SaaS — a pale-blue room with the work floating on a white sheet.
+   Committed to a single light treatment; every colour is painted explicitly
+   so the page holds its look on any host background.
+
+   Measured, not eyeballed.
+   Text (WCAG, on the white sheet): ink 14.3 · ink-2 7.2 · muted 5.4 ·
+   link 5.4 · ok 6.4 · warn 6.3 · white-on-accent 4.7. Muted and link also
+   clear 4.5 on the blue ground behind the sheet (4.7 / 4.8), which is the
+   tighter of the two surfaces.
+   Marks (>= 3:1): bar 4.0 on the sheet and 3.6 on its own track ·
+   up 4.0 · down 4.0 · sma 4.1.
+   --accent is a step darker than --bar on purpose: the button carries white
+   text and needs 4.5, while a bar only needs to be seen. */
 :root {
   color-scheme: light;
-  --page:#F0EEE6;        /* warm oat ground   */
-  --surface:#FAF9F5;     /* card              */
-  --surface-2:#EDEAE0;   /* input, bar track  */
-  --surface-3:#E3DFD2;   /* hover             */
-  --ink:#141413;
-  --ink-2:#4A4844;
-  --muted:#6F6D66;
-  --grid:#E4E0D4;
-  --border:rgba(20,20,19,0.11);
-  --accent:#C4603C;      /* buttons, focus ring */
-  --link:#A34527;        /* accent as text      */
-  --bar:#CC785C;         /* Book Cloth — the data mark */
-  --pill-bg:#F7E7E0; --pill-ink:#B0522F;
-  --tag-bg:#EBDBBC;  --tag-ink:#6B4F2A;   /* manilla */
-  --ok:#3F6B45;      --ok-bg:#E6EEE4;
-  --warn:#8F3016;    --warn-bg:#F9E5DC;
-  /* candle direction. This pair is the only green/coral combination that
-     cleared CVD separation (protan ΔE 10.8; the obvious alternatives scored
-     3.7–5.8). Fill carries the direction too, so colour is never alone. */
-  --up:#3F6B45; --down:#CC785C;
-  /* SMA overlay. Purple was the only hue family that cleared CVD against
-     both candle colours; this step also clears the chroma floor, which the
-     first plum I tried (#7A5B8F, chroma 0.087) did not. Trio measures:
-     CVD dE 10.8, normal-vision 23.1, all three >= 3:1 on the surface. */
-  --sma:#7C46A8;
+  --page:#EAF2FE;        /* the room          */
+  --surface:#FFFFFF;     /* the sheet, and the cards on it */
+  --surface-2:#EEF3FC;   /* input, bar track  */
+  --surface-3:#E0EAFA;   /* hover             */
+  --ink:#1F2A44;
+  --ink-2:#4A5872;
+  --muted:#5F6B85;
+  --grid:#E8EEF7;
+  --border:rgba(31,42,68,0.10);
+  --accent:#1F6FE5;      /* buttons, focus ring */
+  --link:#1C64D8;        /* accent as text      */
+  --bar:#2E7BF6;         /* the data mark       */
+  --pill-bg:#E3EEFE; --pill-ink:#1C64D8;
+  --tag-bg:#E1F5F0;  --tag-ink:#0F6B5C;
+  --ok:#0F6B5C;      --ok-bg:#E3F5F1;
+  --warn:#B03327;    --warn-bg:#FDEAE8;
+  /* The three marks that share the index chart: blue, red, teal. Run as a
+     trio through the palette validator on the white sheet, all pairs —
+     worst CVD dE 9.1, worst normal-vision dE 20.9, all three clear 3:1.
+     Candle fill carries direction as well, so colour is never alone. */
+  --up:#2E7BF6; --down:#DE4F45;
+  --sma:#158C7B;
 }
 
 * { box-sizing: border-box; }
@@ -178,7 +184,15 @@ body {
   font-family:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased; line-height:1.45;
 }
-.wrap { max-width:1180px; margin:0 auto; padding:40px 24px 80px; }
+/* The work floats on a white sheet over the blue ground. The sheet keeps
+   its side gap on narrow screens, where auto margins cannot give one. */
+.wrap {
+  max-width:1180px; margin:26px auto; padding:38px 32px 56px;
+  background:var(--surface); border-radius:20px;
+  box-shadow:0 10px 34px rgba(31,42,68,0.09), 0 1px 3px rgba(31,42,68,0.05);
+}
+@media (max-width:1240px) { .wrap { margin:22px 18px; } }
+@media (max-width:640px)  { .wrap { margin:12px 10px; padding:24px 16px 40px; border-radius:14px; } }
 
 .eyebrow {
   font-family:"IBM Plex Sans Condensed", system-ui, sans-serif;
@@ -363,7 +377,7 @@ button.remove:hover { background:var(--surface-3); color:var(--link); }
   background:var(--surface); border:1px solid var(--border); border-radius:7px;
   padding:8px 11px; font-family:"IBM Plex Mono", ui-monospace, monospace;
   font-size:11.5px; line-height:1.55; color:var(--ink);
-  box-shadow:0 3px 14px rgba(20,20,19,0.13); white-space:nowrap; z-index:5;
+  box-shadow:0 6px 20px rgba(31,42,68,0.14); white-space:nowrap; z-index:5;
   font-variant-numeric:tabular-nums;
 }
 .chart-tip.on { opacity:1; }
