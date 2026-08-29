@@ -1,0 +1,24 @@
+name: Cron probe (diagnostic)
+
+# A deliberately trivial workflow whose only job is to answer one question:
+# does GitHub's scheduler fire for THIS repository at all?
+#
+# The daily job has never once run from a `schedule` event — every run so far
+# was a manual dispatch. Rather than keep guessing at the cause, this probe
+# asks for a tick every 5 minutes and does nothing else: no data, no Telegram,
+# no deploy, so it cannot make noise or cost anything meaningful.
+#
+# Delete this file once the question is answered.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: |
+          echo "event   : ${{ github.event_name }}"
+          echo "utc now : $(date -u '+%F %T')"
