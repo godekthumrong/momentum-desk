@@ -1,5 +1,6 @@
 name: Cron probe (diagnostic)
 
+
 # A deliberately trivial workflow whose only job is to answer one question:
 # does GitHub's scheduler fire for THIS repository at all?
 #
@@ -11,8 +12,10 @@ name: Cron probe (diagnostic)
 # Delete this file once the question is answered.
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "7,37 * * * *"→ Runs every 5 minutes
+
   workflow_dispatch:
+
 
 jobs:
   tick:
@@ -22,3 +25,4 @@ jobs:
       - run: |
           echo "event   : ${{ github.event_name }}"
           echo "utc now : $(date -u '+%F %T')"
+
