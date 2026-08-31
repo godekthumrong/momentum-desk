@@ -22,8 +22,8 @@ COST_BPS       = 20        # ค่าธรรมเนียม+slippage ต�
 EXIT_RANK      = 100       # ขายเมื่ออันดับหลุดเกินนี้ (None = เปลี่ยนตัวใหม่ทุกเดือน)
 REGIME_SMA     = 200       # ห้ามซื้อใหม่เมื่อดัชนีต่ำกว่า SMA นี้ (None = ปิดกฎนี้)
 REGIME_TICKER  = "^GSPC"   # ดัชนีที่ใช้ตัดสิน regime (ราคาเปล่า ตรงกับที่คนอ้างถึง)
-CASH_HEDGE_TICKER = None   # เช่น "TLT" — ช่วงที่ regime ปิด (ห้ามซื้อใหม่) เอาสัดส่วนที่ว่าง
-                           # ไปซื้อตัวนี้แทนการถือเงินสด 0% None = ถือเงินสดตามเดิม
+CASH_HEDGE_TICKER = "TLT"  # ช่วงที่ regime ปิด (ห้ามซื้อใหม่) เอาสัดส่วนที่ว่างไปซื้อตัวนี้
+                           # แทนการถือเงินสด 0% — None = ถือเงินสดตามเดิม
 BENCHMARK      = "SPY"     # total return (รวมปันผล) ต่างจาก ^GSPC ที่เป็นราคาเปล่า
 SHOW_BIASED    = False     # True = แสดงชุดที่ใช้สมาชิกปัจจุบัน (มี survivorship bias) เทียบด้วย
 
@@ -39,8 +39,11 @@ if _os.environ.get("MOMENTUM_YEARS"):
     YEARS = int(_os.environ["MOMENTUM_YEARS"])
 if _os.environ.get("MOMENTUM_TOP_N"):
     TOP_N = int(_os.environ["MOMENTUM_TOP_N"])
-if _os.environ.get("MOMENTUM_CASH_HEDGE") is not None:
-    CASH_HEDGE_TICKER = _os.environ["MOMENTUM_CASH_HEDGE"].strip() or None
+# ว่าง = ใช้ค่า default ด้านบน (workflow ส่งตัวแปรนี้มาทุกครั้ง แม้ช่องจะว่าง)
+# "none"/"off"/"cash" = สั่งให้ถือเงินสดแบบเดิม  อย่างอื่น = ใช้ ticker นั้น
+_hedge_env = (_os.environ.get("MOMENTUM_CASH_HEDGE") or "").strip()
+if _hedge_env:
+    CASH_HEDGE_TICKER = None if _hedge_env.lower() in ("none", "off", "cash") else _hedge_env
 
 import bisect
 import io
@@ -194,7 +197,9 @@ def select(prices, returns, asof, universe, top_n, lookback, vol_window,
                 are still sold when they breach exit_rank.
 
     Weights are scaled by filled slots / top_n, so slots that cannot be filled
-    stay in cash instead of concentrating the portfolio into whatever is left.
+    are left empty instead of concentrating the portfolio into whatever is left.
+    What happens to that empty weight is decided by the caller: run_backtest
+    parks it in CASH_HEDGE_TICKER when one is set, and holds cash otherwise.
     """
     available = [t for t in universe if t in prices.columns]
     if not available:

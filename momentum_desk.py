@@ -657,14 +657,15 @@ BODY = """
           <li>While the S&amp;P 500 index is under its 200-day moving average, no new buys.</li>
           <li>Sell a stock when it drops out of the top 100.</li>
           <li>Rebalance every month.</li>
+          <li>The cash freed by rule 5 buys TLT instead of sitting idle.</li>
         </ol>
       </div>
       <p class="rules-note">This page is the monthly decision laid out, not an account of
         one. It shows today&rsquo;s ranking, today&rsquo;s inverse-volatility weights, and
         whether rule 5 currently allows buying &mdash; that is the &ldquo;vs SMA 200&rdquo;
         reading on the chart above.
-        Rules 1, 6 and 7 play out across time, so it is the backtest below that actually
-        enforces them. The &ldquo;ranking depth&rdquo; control at the top changes only how
+        Rules 1, 6, 7 and 8 play out across time, so it is the backtest below that
+        actually enforces them. The &ldquo;ranking depth&rdquo; control at the top changes only how
         many rows the table shows; it does not change the rules.</p>
     </div>
   </section>
