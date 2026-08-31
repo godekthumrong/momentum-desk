@@ -12,7 +12,7 @@ on:
         description: "Positions held"
         default: "20"
       cash_hedge:
-        description: "While regime is off, buy this instead of holding cash (e.g. TLT). Leave blank for the normal run — a run with this set is a dry-run only and is NOT published to the site."
+        description: "Leave blank for the normal run (parks regime-off cash in TLT). Set another ticker, or 'none' to hold plain cash, to try something else — a run with this set is a dry-run only and is NOT published to the site."
         default: ""
 
 permissions:
@@ -52,8 +52,9 @@ jobs:
       # A push made with GITHUB_TOKEN does not trigger workflows, so this
       # cannot set the daily job off in a loop.
       #
-      # A run with cash_hedge set is a one-off experiment — it is NOT
-      # published, so the live site and its snapshot card are untouched
+      # The normal run leaves cash_hedge blank, which means the script's own
+      # default (TLT). A run that overrides it is a one-off experiment — it is
+      # NOT published, so the live site and its snapshot card are untouched
       # until the change is deliberately promoted into the normal run.
       - name: Publish the report into the repo
         if: success() && inputs.cash_hedge == ''
