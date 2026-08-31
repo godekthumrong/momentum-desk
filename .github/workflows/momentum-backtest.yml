@@ -14,6 +14,9 @@ on:
       cash_hedge:
         description: "Leave blank for the normal run (parks regime-off cash in TLT). Set another ticker, or 'none' to hold plain cash, to try something else — a run with this set is a dry-run only and is NOT published to the site."
         default: ""
+      leverage:
+        description: "Margin. Leave blank or 1.0 for the normal unlevered run; 1.2 borrows 20% of equity and charges interest on it. Any other value makes this a dry-run that is NOT published."
+        default: ""
 
 permissions:
   contents: write        # the report is committed back, see the last step
@@ -35,6 +38,7 @@ jobs:
           MOMENTUM_YEARS: ${{ inputs.years }}
           MOMENTUM_TOP_N: ${{ inputs.top_n }}
           MOMENTUM_CASH_HEDGE: ${{ inputs.cash_hedge }}
+          MOMENTUM_LEVERAGE: ${{ inputs.leverage }}
         run: python momentum_backtest.py
       - uses: actions/upload-artifact@v4
         if: always()
@@ -52,12 +56,15 @@ jobs:
       # A push made with GITHUB_TOKEN does not trigger workflows, so this
       # cannot set the daily job off in a loop.
       #
-      # The normal run leaves cash_hedge blank, which means the script's own
-      # default (TLT). A run that overrides it is a one-off experiment — it is
-      # NOT published, so the live site and its snapshot card are untouched
-      # until the change is deliberately promoted into the normal run.
+      # The normal run leaves cash_hedge and leverage blank, which means the
+      # script's own defaults (TLT, unlevered). A run that overrides either is
+      # a one-off experiment — it is NOT published, so the live site and its
+      # snapshot card are untouched until the change is deliberately promoted
+      # into the normal run.
       - name: Publish the report into the repo
-        if: success() && inputs.cash_hedge == ''
+        if: >-
+          success() && inputs.cash_hedge == ''
+          && (inputs.leverage == '' || inputs.leverage == '1.0')
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
