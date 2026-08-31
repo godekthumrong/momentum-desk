@@ -1587,6 +1587,28 @@ if prices.empty or prices.shape[1] < 50:
 print(f"      {prices.shape[0]} วัน x {prices.shape[1]} ตัว "
       f"({prices.index[0].date()} ถึง {prices.index[-1].date()})")
 
+# ── กรองราคาที่เพี้ยน ──────────────────────────────────────────────────────
+# หุ้นใน S&P 500 ไม่เคยขึ้นหลายร้อยเปอร์เซ็นต์ในวันเดียว ค่าแบบนั้นคือข้อมูลผิด
+# (มักเป็น split/reverse-split ที่ไม่ได้ปรับ) ถ้าปล่อยไว้แล้วโมเมนตัมไปเลือกเจอ
+# ผลตอบแทนทั้งพอร์ตจะพุ่งแบบไม่จริง — ชุดตัวหุ้นที่โหลดได้เปลี่ยนไปทุกครั้ง
+# ผลลัพธ์เลยเพี้ยนแบบสุ่ม ๆ ถ้าไม่กรองตรงนี้
+_MAX_DAY_MOVE = 4.0        # +400% ในวันเดียว
+_rets = prices.pct_change(fill_method=None)
+_worst = _rets.max()
+_bad = sorted([str(t) for t in _worst.index[_worst > _MAX_DAY_MOVE]])
+if _bad:
+    print(f"      ตัดทิ้ง {len(_bad)} ตัวที่ราคาเพี้ยน (เด้งเกิน "
+          f"{_MAX_DAY_MOVE*100:.0f}% ในวันเดียว):")
+    for t in _bad[:12]:
+        d = _rets[t].idxmax()
+        print(f"        {t:<8} +{_worst[t]*100:,.0f}% เมื่อ {d.date()}")
+    if len(_bad) > 12:
+        print(f"        ... และอีก {len(_bad) - 12} ตัว")
+    prices = prices.drop(columns=_bad)
+    print(f"      เหลือ {prices.shape[1]} ตัว")
+else:
+    print(f"      ไม่พบราคาที่เพี้ยน (สูงสุด +{_worst.max()*100:.0f}% ในวันเดียว)")
+
 print(f"\n[4/5] ดาวน์โหลด benchmark ({BENCHMARK}, total return)")
 try:
     braw = yf.download(BENCHMARK, period=f"{YEARS}y", auto_adjust=True, progress=False)
