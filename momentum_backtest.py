@@ -22,6 +22,8 @@ COST_BPS       = 20        # ค่าธรรมเนียม+slippage ต�
 EXIT_RANK      = 100       # ขายเมื่ออันดับหลุดเกินนี้ (None = เปลี่ยนตัวใหม่ทุกเดือน)
 REGIME_SMA     = 200       # ห้ามซื้อใหม่เมื่อดัชนีต่ำกว่า SMA นี้ (None = ปิดกฎนี้)
 REGIME_TICKER  = "^GSPC"   # ดัชนีที่ใช้ตัดสิน regime (ราคาเปล่า ตรงกับที่คนอ้างถึง)
+CASH_HEDGE_TICKER = None   # เช่น "TLT" — ช่วงที่ regime ปิด (ห้ามซื้อใหม่) เอาสัดส่วนที่ว่าง
+                           # ไปซื้อตัวนี้แทนการถือเงินสด 0% None = ถือเงินสดตามเดิม
 BENCHMARK      = "SPY"     # total return (รวมปันผล) ต่างจาก ^GSPC ที่เป็นราคาเปล่า
 SHOW_BIASED    = False     # True = แสดงชุดที่ใช้สมาชิกปัจจุบัน (มี survivorship bias) เทียบด้วย
 
@@ -37,6 +39,8 @@ if _os.environ.get("MOMENTUM_YEARS"):
     YEARS = int(_os.environ["MOMENTUM_YEARS"])
 if _os.environ.get("MOMENTUM_TOP_N"):
     TOP_N = int(_os.environ["MOMENTUM_TOP_N"])
+if _os.environ.get("MOMENTUM_CASH_HEDGE") is not None:
+    CASH_HEDGE_TICKER = _os.environ["MOMENTUM_CASH_HEDGE"].strip() or None
 
 import bisect
 import io
@@ -244,22 +248,29 @@ def traded(prev_w, new_w):
 
 
 def run_backtest(prices, rebalance_dates, membership, top_n, lookback,
-                 vol_window, cost_bps, exit_rank=None, regime=None):
+                 vol_window, cost_bps, exit_rank=None, regime=None,
+                 hedge_ticker=None):
     """Walk the rebalance schedule and return a daily equity curve.
 
-    membership: callable(date) -> iterable of tickers eligible on that date.
-    cost_bps:   cost in basis points charged per unit of notional traded.
-    exit_rank:  hold a name until its rank falls outside this many; None means
-                straight top-N replacement each month.
-    regime:     optional boolean Series; where False, no new positions open.
-    Returns dict with net/gross equity, traded fractions, exposure and holdings.
+    membership:  callable(date) -> iterable of tickers eligible on that date.
+    cost_bps:    cost in basis points charged per unit of notional traded.
+    exit_rank:   hold a name until its rank falls outside this many; None means
+                 straight top-N replacement each month.
+    regime:      optional boolean Series; where False, no new positions open.
+    hedge_ticker: while regime blocks new buys, the slots that would otherwise
+                 sit idle are parked here instead of cash (0%). Ignored unless
+                 `regime` is also set and the ticker has a price column.
+                 Returns dict with net/gross equity, traded fractions, exposure
+                 and holdings.
     """
     returns = prices.pct_change(fill_method=None)
     idx = prices.index
+    use_hedge = bool(hedge_ticker) and hedge_ticker in returns.columns
 
     net = pd.Series(1.0, index=idx, dtype=float)
     gross = pd.Series(1.0, index=idx, dtype=float)
     exposure = pd.Series(0.0, index=idx, dtype=float)
+    hedge_exposure = pd.Series(0.0, index=idx, dtype=float)
     weights = pd.Series(dtype=float)
     history, turns, blocked = [], [], 0
 
@@ -291,6 +302,14 @@ def run_backtest(prices, rebalance_dates, membership, top_n, lookback,
             # under the regime filter an empty result means "hold nothing",
             # which is a legitimate state rather than a failed calculation
             if len(new_w) or (exit_rank is not None and not can_buy):
+                # regime-off slots that stocks did not fill go to the hedge
+                # ticker instead of sitting idle — only while buying is
+                # actually blocked, never to top up a merely-thin stock pick
+                if use_hedge and not can_buy:
+                    leftover = 1.0 - float(new_w.sum())
+                    if leftover > 1e-9:
+                        new_w = new_w.copy()
+                        new_w[hedge_ticker] = new_w.get(hedge_ticker, 0.0) + leftover
                 t = traded(weights, new_w)
                 equity_n *= (1 - t * cost_bps / 10_000.0)
                 turns.append((prev, t))
@@ -300,8 +319,11 @@ def run_backtest(prices, rebalance_dates, membership, top_n, lookback,
         net.iloc[i] = equity_n
         gross.iloc[i] = equity_g
         exposure.iloc[i] = float(weights.sum()) if len(weights) else 0.0
+        if use_hedge:
+            hedge_exposure.iloc[i] = float(weights.get(hedge_ticker, 0.0)) if len(weights) else 0.0
 
     return {"net": net, "gross": gross, "exposure": exposure,
+            "hedge_exposure": hedge_exposure,
             "traded": pd.Series(dict(turns), dtype=float),
             "blocked_rebalances": blocked,
             "holdings": history}
@@ -663,7 +685,9 @@ SCRIPT = r"""
     M.exit_rank + ", rather than being replaced every month.";
   if (M.regime_sma) rules += " While the S&P 500 index sits below its " + M.regime_sma +
     "-day average, no new position is opened — holdings still leave on the rank rule, " +
-    "and the freed slots stay in cash.";
+    (M.cash_hedge_ticker
+      ? "and the freed slots go into " + M.cash_hedge_ticker + " instead of cash."
+      : "and the freed slots stay in cash.");
   rules += " Costs of " + M.cost_bps + " bps are charged on every unit of notional traded.";
   document.getElementById("intro").textContent = rules;
 
@@ -921,8 +945,13 @@ SCRIPT = r"""
              f(r.gross_metrics) + "</td><td>" + f(bm) + "</td></tr>";
     }).join("") +
       (r.avg_exposure != null
-        ? '<tr><td>Average invested (rest in cash)</td><td>' + pct(r.avg_exposure, 0) +
+        ? '<tr><td>' + (M.cash_hedge_ticker ? "Average invested in stocks" : "Average invested (rest in cash)") +
+          '</td><td>' + pct(r.avg_hedge_exposure != null ? r.avg_exposure - r.avg_hedge_exposure : r.avg_exposure, 0) +
           '</td><td>&mdash;</td><td>100%</td></tr>'
+        : '') +
+      (r.avg_hedge_exposure != null
+        ? '<tr><td>Average in ' + esc(M.cash_hedge_ticker) + ' (regime-off cash)</td><td>' +
+          pct(r.avg_hedge_exposure, 0) + '</td><td>&mdash;</td><td>&mdash;</td></tr>'
         : '') +
       (r.blocked != null && r.n_rebalances
         ? '<tr><td>Months with buying blocked</td><td>' + r.blocked + ' of ' +
@@ -956,10 +985,15 @@ SCRIPT = r"""
         "the top " + M.exit_rank + ". This buffer is what keeps trading down — replacing " +
         "the book every month costs far more in fees.</li>" : "") +
       (M.regime_sma ? "<li>Regime rule: no new position opens while the index is below its " +
-        M.regime_sma + "-day average, measured on the rebalance date itself. Slots that " +
-        "cannot be filled hold cash at 0%, so the portfolio de-risks as holdings age out. " +
-        "It was invested " + pct(r.avg_exposure, 0) + " of the time on average, and buying " +
-        "was blocked in " + r.blocked + " of " + r.n_rebalances + " months.</li>" : "") +
+        M.regime_sma + "-day average, measured on the rebalance date itself. " +
+        (M.cash_hedge_ticker
+          ? "Slots that cannot be filled go into " + M.cash_hedge_ticker + " instead of cash — " +
+            pct(r.avg_hedge_exposure || 0, 0) + " of the portfolio sat in " + M.cash_hedge_ticker +
+            " on average. "
+          : "Slots that cannot be filled hold cash at 0%, so the portfolio de-risks as holdings age out. ") +
+        "It was invested " + pct(r.avg_exposure, 0) + " of the time on average" +
+        (M.cash_hedge_ticker ? " in stocks and " + M.cash_hedge_ticker + " combined" : "") +
+        ", and buying was blocked in " + r.blocked + " of " + r.n_rebalances + " months.</li>" : "") +
       "<li>Costs: " + M.cost_bps + " bps charged on turnover, covering commission and slippage together. " +
         "The dashed line shows what the same trades would have returned with no costs at all. " +
         "A full swap of the book counts as 200%, since both the sale and the purchase pay.</li>" +
@@ -1275,7 +1309,7 @@ def to_series_list(s, dp=6):
 
 
 def run_all(prices, spy, current, changes, cfg, log=print, regime=None,
-            snapshots=None):
+            snapshots=None, hedge_ticker=None):
     """Produce the payload for both runs."""
     runs = []
     all_dates = prices.index
@@ -1374,7 +1408,8 @@ def run_all(prices, spy, current, changes, cfg, log=print, regime=None,
 
         res = run_backtest(prices, rebals, spec["universe"], cfg["top_n"],
                            cfg["lookback"], cfg["vol_window"], cfg["cost_bps"],
-                           exit_rank=cfg.get("exit_rank"), regime=regime)
+                           exit_rank=cfg.get("exit_rank"), regime=regime,
+                           hedge_ticker=hedge_ticker)
 
         begin = rebals[0]
         net = res["net"].loc[begin:]
@@ -1421,15 +1456,19 @@ def run_all(prices, spy, current, changes, cfg, log=print, regime=None,
             "turnover": float(res["traded"].mean()) if len(res["traded"]) else 0.0,
             "exposure": [round(float(res["exposure"].loc[net.index[i]]), 4) for i in idx],
             "avg_exposure": float(res["exposure"].loc[net.index].mean()),
+            "avg_hedge_exposure": (float(res["hedge_exposure"].loc[net.index].mean())
+                                   if hedge_ticker else None),
             "blocked": int(res["blocked_rebalances"]),
             "n_rebalances": len(rebals),
             "universe_size": usize,
         })
         m = runs[-1]["metrics"]
+        hedge_note = (f"  avg {hedge_ticker} {runs[-1]['avg_hedge_exposure']*100:.0f}%"
+                      if hedge_ticker else "")
         log(f"  [{spec['key']}] {net.index[0].date()} to {net.index[-1].date()}  "
             f"CAGR {m['cagr']*100:.1f}%  maxDD {m['max_drawdown']*100:.0f}%  "
             f"vs index {runs[-1]['bench_metrics']['cagr']*100:.1f}%  "
-            f"avg exposure {runs[-1]['avg_exposure']*100:.0f}%  "
+            f"avg exposure {runs[-1]['avg_exposure']*100:.0f}%{hedge_note}  "
             f"blocked {runs[-1]['blocked']}/{len(rebals)}")
 
     # when both were run, record what the hindsight was worth
@@ -1545,13 +1584,34 @@ if REGIME_SMA:
         print(f"      (ดึงดัชนีไม่สำเร็จ — ปิด regime filter: {type(e).__name__})")
         regime = None
 
+# ─── cash hedge: ตัวที่จะซื้อแทนเงินสดตอน regime ปิด (ถ้าตั้งไว้) ───────────────
+hedge_ticker = CASH_HEDGE_TICKER if (CASH_HEDGE_TICKER and regime is not None) else None
+if CASH_HEDGE_TICKER and regime is None:
+    print(f"      (ปิด regime filter อยู่ — {CASH_HEDGE_TICKER} จะไม่ถูกใช้แทนเงินสด)")
+if hedge_ticker:
+    print(f"\n      ดึง {hedge_ticker} สำหรับใช้แทนเงินสดตอน regime ปิด")
+    try:
+        hraw = yf.download(hedge_ticker, period=f"{YEARS}y",
+                           auto_adjust=True, progress=False)
+        if isinstance(hraw.columns, pd.MultiIndex):
+            hraw.columns = hraw.columns.droplevel(-1)
+        hclose = hraw["Close"].dropna()
+        if hclose.empty:
+            raise ValueError("no price data returned")
+        prices[hedge_ticker] = hclose.reindex(prices.index).ffill()
+        print(f"      {len(hclose)} วัน — พร้อมใช้แทนเงินสด")
+    except Exception as e:
+        print(f"      (ดึง {hedge_ticker} ไม่สำเร็จ — ช่วง regime ปิดจะถือเงินสดตามเดิม: "
+              f"{type(e).__name__})")
+        hedge_ticker = None
+
 print("\n[5/5] รัน backtest ทั้งสองชุด")
 cfg = {"years": YEARS, "top_n": TOP_N, "lookback": LOOKBACK_DAYS,
        "vol_window": VOL_WINDOW, "cost_bps": COST_BPS, "rebalance": "monthly",
        "benchmark": BENCHMARK, "exit_rank": EXIT_RANK, "regime_sma": REGIME_SMA,
-       "show_biased": SHOW_BIASED}
+       "cash_hedge_ticker": hedge_ticker, "show_biased": SHOW_BIASED}
 payload = run_all(prices, spy, current, changes, cfg, regime=regime,
-                  snapshots=snapshots)
+                  snapshots=snapshots, hedge_ticker=hedge_ticker)
 
 if not payload["runs"]:
     _bail("ไม่มีข้อมูลพอสำหรับ backtest / not enough history to backtest",
@@ -1574,6 +1634,9 @@ for r in payload["runs"]:
     print(f"    worst drawdown {m['max_drawdown']*100:5.0f}%   "
           f"traded {r['turnover']*100:.0f}%/month   "
           f"invested {r.get('avg_exposure', 1)*100:.0f}% on average")
+    if r.get("avg_hedge_exposure") is not None:
+        print(f"    of which {hedge_ticker} (regime-off cash) "
+              f"{r['avg_hedge_exposure']*100:.0f}% on average")
     if r.get("n_rebalances"):
         print(f"    buying blocked in {r['blocked']} of {r['n_rebalances']} months")
 print("=" * 68)
