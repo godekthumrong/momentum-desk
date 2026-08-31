@@ -11,6 +11,9 @@ on:
       top_n:
         description: "Positions held"
         default: "20"
+      cash_hedge:
+        description: "While regime is off, buy this instead of holding cash (e.g. TLT). Leave blank for the normal run — a run with this set is a dry-run only and is NOT published to the site."
+        default: ""
 
 permissions:
   contents: write        # the report is committed back, see the last step
@@ -31,6 +34,7 @@ jobs:
           MOMENTUM_HEADLESS: "1"
           MOMENTUM_YEARS: ${{ inputs.years }}
           MOMENTUM_TOP_N: ${{ inputs.top_n }}
+          MOMENTUM_CASH_HEDGE: ${{ inputs.cash_hedge }}
         run: python momentum_backtest.py
       - uses: actions/upload-artifact@v4
         if: always()
@@ -47,8 +51,12 @@ jobs:
       # along because the dashboard reads it to draw its snapshot card.
       # A push made with GITHUB_TOKEN does not trigger workflows, so this
       # cannot set the daily job off in a loop.
+      #
+      # A run with cash_hedge set is a one-off experiment — it is NOT
+      # published, so the live site and its snapshot card are untouched
+      # until the change is deliberately promoted into the normal run.
       - name: Publish the report into the repo
-        if: success()
+        if: success() && inputs.cash_hedge == ''
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
