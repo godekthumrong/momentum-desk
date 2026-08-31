@@ -24,6 +24,10 @@ REGIME_SMA     = 200       # ห้ามซื้อใหม่เมื่อ
 REGIME_TICKER  = "^GSPC"   # ดัชนีที่ใช้ตัดสิน regime (ราคาเปล่า ตรงกับที่คนอ้างถึง)
 CASH_HEDGE_TICKER = "TLT"  # ช่วงที่ regime ปิด (ห้ามซื้อใหม่) เอาสัดส่วนที่ว่างไปซื้อตัวนี้
                            # แทนการถือเงินสด 0% — None = ถือเงินสดตามเดิม
+LEVERAGE       = 1.0       # 1.0 = ไม่ใช้มาร์จิ้น, 1.2 = ยืมเพิ่ม 20% ของทุน
+MARGIN_SPREAD_BPS = 150    # ดอกเบี้ยมาร์จิ้น = ตั๋วเงินคลัง 3 เดือน + ส่วนต่างนี้
+MARGIN_RATE_TICKER = "^IRX"   # ตั๋วเงินคลัง 3 เดือน (ใช้เป็นฐานดอกเบี้ยเงินกู้)
+MARGIN_FALLBACK_RATE = 0.03   # ใช้เมื่อดึงอัตราดอกเบี้ยจริงไม่สำเร็จ
 BENCHMARK      = "SPY"     # total return (รวมปันผล) ต่างจาก ^GSPC ที่เป็นราคาเปล่า
 SHOW_BIASED    = False     # True = แสดงชุดที่ใช้สมาชิกปัจจุบัน (มี survivorship bias) เทียบด้วย
 
@@ -44,6 +48,10 @@ if _os.environ.get("MOMENTUM_TOP_N"):
 _hedge_env = (_os.environ.get("MOMENTUM_CASH_HEDGE") or "").strip()
 if _hedge_env:
     CASH_HEDGE_TICKER = None if _hedge_env.lower() in ("none", "off", "cash") else _hedge_env
+if _os.environ.get("MOMENTUM_LEVERAGE"):
+    LEVERAGE = float(_os.environ["MOMENTUM_LEVERAGE"])
+if _os.environ.get("MOMENTUM_MARGIN_SPREAD"):
+    MARGIN_SPREAD_BPS = float(_os.environ["MOMENTUM_MARGIN_SPREAD"])
 
 import bisect
 import io
@@ -254,7 +262,7 @@ def traded(prev_w, new_w):
 
 def run_backtest(prices, rebalance_dates, membership, top_n, lookback,
                  vol_window, cost_bps, exit_rank=None, regime=None,
-                 hedge_ticker=None):
+                 hedge_ticker=None, leverage=1.0, fin_daily=None):
     """Walk the rebalance schedule and return a daily equity curve.
 
     membership:  callable(date) -> iterable of tickers eligible on that date.
@@ -265,8 +273,18 @@ def run_backtest(prices, rebalance_dates, membership, top_n, lookback,
     hedge_ticker: while regime blocks new buys, the slots that would otherwise
                  sit idle are parked here instead of cash (0%). Ignored unless
                  `regime` is also set and the ticker has a price column.
+    leverage:    every position is scaled by this, so 1.2 means the book runs
+                 at 120% of equity with 20% borrowed. Trading costs scale with
+                 it too, because the notional traded scales.
+    fin_daily:   daily margin interest rate charged on the borrowed part. A
+                 leveraged run without it silently finances the loan for free,
+                 so pass one whenever leverage > 1.
                  Returns dict with net/gross equity, traded fractions, exposure
                  and holdings.
+
+    Leverage here is reset daily rather than left to drift between rebalances,
+    which is the usual simplification but not what a real margin account does:
+    a real one lets leverage rise into a fall and decay into a rally.
     """
     returns = prices.pct_change(fill_method=None)
     idx = prices.index
@@ -291,8 +309,16 @@ def run_backtest(prices, rebalance_dates, membership, top_n, lookback,
             r = float((day.fillna(0.0) * weights.reindex(day.index).fillna(0.0)).sum())
         else:
             r = 0.0
-        equity_n *= (1 + r)
-        equity_g *= (1 + r)
+        # borrowed money earns the same return but costs interest every day;
+        # gross stays the pure levered market return so the report's dashed
+        # line still means "the same trades with no costs charged"
+        borrow = 0.0
+        if leverage != 1.0 and fin_daily is not None:
+            fr = fin_daily.get(today)
+            if fr is not None and not pd.isna(fr):
+                borrow = (leverage - 1.0) * float(fr)
+        equity_n *= (1 + leverage * r - borrow)
+        equity_g *= (1 + leverage * r)
 
         if prev in rebal:
             can_buy = True
@@ -316,16 +342,18 @@ def run_backtest(prices, rebalance_dates, membership, top_n, lookback,
                         new_w = new_w.copy()
                         new_w[hedge_ticker] = new_w.get(hedge_ticker, 0.0) + leftover
                 t = traded(weights, new_w)
-                equity_n *= (1 - t * cost_bps / 10_000.0)
+                equity_n *= (1 - leverage * t * cost_bps / 10_000.0)
                 turns.append((prev, t))
                 history.append((prev, new_w))
                 weights = new_w
 
         net.iloc[i] = equity_n
         gross.iloc[i] = equity_g
-        exposure.iloc[i] = float(weights.sum()) if len(weights) else 0.0
+        # reported as a share of equity, so a levered book reads above 100%
+        exposure.iloc[i] = float(weights.sum()) * leverage if len(weights) else 0.0
         if use_hedge:
-            hedge_exposure.iloc[i] = float(weights.get(hedge_ticker, 0.0)) if len(weights) else 0.0
+            hedge_exposure.iloc[i] = (float(weights.get(hedge_ticker, 0.0)) * leverage
+                                      if len(weights) else 0.0)
 
     return {"net": net, "gross": gross, "exposure": exposure,
             "hedge_exposure": hedge_exposure,
@@ -1314,7 +1342,7 @@ def to_series_list(s, dp=6):
 
 
 def run_all(prices, spy, current, changes, cfg, log=print, regime=None,
-            snapshots=None, hedge_ticker=None):
+            snapshots=None, hedge_ticker=None, leverage=1.0, fin_daily=None):
     """Produce the payload for both runs."""
     runs = []
     all_dates = prices.index
@@ -1414,7 +1442,8 @@ def run_all(prices, spy, current, changes, cfg, log=print, regime=None,
         res = run_backtest(prices, rebals, spec["universe"], cfg["top_n"],
                            cfg["lookback"], cfg["vol_window"], cfg["cost_bps"],
                            exit_rank=cfg.get("exit_rank"), regime=regime,
-                           hedge_ticker=hedge_ticker)
+                           hedge_ticker=hedge_ticker,
+                           leverage=leverage, fin_daily=fin_daily)
 
         begin = rebals[0]
         net = res["net"].loc[begin:]
@@ -1610,13 +1639,42 @@ if hedge_ticker:
               f"{type(e).__name__})")
         hedge_ticker = None
 
+# ─── margin: ดอกเบี้ยเงินกู้รายวัน (ใช้เมื่อ LEVERAGE > 1 เท่านั้น) ─────────────
+fin_daily = None
+margin_note = None
+if LEVERAGE != 1.0:
+    print(f"\n      มาร์จิ้น {LEVERAGE:.2f}x — ดึง {MARGIN_RATE_TICKER} "
+          f"เป็นฐานดอกเบี้ย (+{MARGIN_SPREAD_BPS:.0f}bps)")
+    try:
+        iraw = yf.download(MARGIN_RATE_TICKER, period=f"{YEARS}y",
+                           auto_adjust=True, progress=False)
+        if isinstance(iraw.columns, pd.MultiIndex):
+            iraw.columns = iraw.columns.droplevel(-1)
+        irx = iraw["Close"].dropna()          # ^IRX เป็นเปอร์เซ็นต์ เช่น 5.25
+        if irx.empty:
+            raise ValueError("no rate data returned")
+        annual = irx.reindex(prices.index).ffill().bfill() / 100.0 \
+                 + MARGIN_SPREAD_BPS / 10_000.0
+        fin_daily = annual / TRADING_DAYS
+        margin_note = (f"{MARGIN_RATE_TICKER} + {MARGIN_SPREAD_BPS:.0f}bps "
+                       f"(เฉลี่ย {float(annual.mean())*100:.2f}%/ปี)")
+        print(f"      ดอกเบี้ยกู้เฉลี่ยตลอดช่วง {float(annual.mean())*100:.2f}%/ปี")
+    except Exception as e:
+        annual = MARGIN_FALLBACK_RATE + MARGIN_SPREAD_BPS / 10_000.0
+        fin_daily = pd.Series(annual / TRADING_DAYS, index=prices.index)
+        margin_note = f"อัตราคงที่ {annual*100:.2f}%/ปี (ดึงอัตราจริงไม่สำเร็จ)"
+        print(f"      (ดึงอัตราดอกเบี้ยไม่สำเร็จ {type(e).__name__} — "
+              f"ใช้อัตราคงที่ {annual*100:.2f}%/ปีแทน)")
+
 print("\n[5/5] รัน backtest ทั้งสองชุด")
 cfg = {"years": YEARS, "top_n": TOP_N, "lookback": LOOKBACK_DAYS,
        "vol_window": VOL_WINDOW, "cost_bps": COST_BPS, "rebalance": "monthly",
        "benchmark": BENCHMARK, "exit_rank": EXIT_RANK, "regime_sma": REGIME_SMA,
-       "cash_hedge_ticker": hedge_ticker, "show_biased": SHOW_BIASED}
+       "cash_hedge_ticker": hedge_ticker, "show_biased": SHOW_BIASED,
+       "leverage": LEVERAGE, "margin_rate": margin_note}
 payload = run_all(prices, spy, current, changes, cfg, regime=regime,
-                  snapshots=snapshots, hedge_ticker=hedge_ticker)
+                  snapshots=snapshots, hedge_ticker=hedge_ticker,
+                  leverage=LEVERAGE, fin_daily=fin_daily)
 
 if not payload["runs"]:
     _bail("ไม่มีข้อมูลพอสำหรับ backtest / not enough history to backtest",
@@ -1644,6 +1702,10 @@ for r in payload["runs"]:
               f"{r['avg_hedge_exposure']*100:.0f}% on average")
     if r.get("n_rebalances"):
         print(f"    buying blocked in {r['blocked']} of {r['n_rebalances']} months")
+    print(f"    volatility {m['vol']*100:.1f}%   Sharpe {m['sharpe']:.2f}   "
+          f"Calmar {m['calmar']:.2f}   worst day {m['worst_day']*100:.1f}%")
+    if LEVERAGE != 1.0:
+        print(f"    margin {LEVERAGE:.2f}x, interest {margin_note}")
 print("=" * 68)
 
 if len(payload["runs"]) == 2:
