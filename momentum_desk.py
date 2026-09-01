@@ -1416,6 +1416,18 @@ if data.empty or data.shape[1] == 0:
 AS_OF = data.index[-1].strftime("%Y-%m-%d")
 print(f"      {data.shape[0]} แถว x {data.shape[1]} ตัว, ปิดล่าสุด {AS_OF}")
 
+# ── อุดรูข้อมูลสั้น ๆ ให้ทุกตัวอยู่บนปฏิทินวันทำการชุดเดียวกัน ────────────────
+# Yahoo มีวันที่หายเป็นราย ๆ ตัว (เช่น WDC ไม่มีแท่ง 2026-08-28 ทั้งที่ตลาดเปิด)
+# ถ้าปล่อยไว้แล้วไป dropna() ทีหลัง หน้าต่าง 125 แถวของตัวนั้นจะเลื่อนถอยไป
+# กินอีกวันโดยไม่รู้ตัว — หุ้นแต่ละตัวเลยถูกวัดด้วยช่วงเวลาไม่เท่ากันและอันดับเพี้ยน
+# เติมเฉพาะรูสั้น ๆ ถ้าหายยาวเกินนี้แปลว่าเลิกเทรด/ถูกถอด ปล่อยเป็น NaN ให้ตกรอบไป
+MAX_GAP_FILL = 5
+_holes = int(data.isna().sum().sum())
+data = data.ffill(limit=MAX_GAP_FILL)
+_left = int(data.isna().sum().sum())
+print(f"      อุดรูข้อมูล {_holes - _left} ช่อง (เหลือ {_left} ช่องที่หายยาวเกิน "
+      f"{MAX_GAP_FILL} วัน — ตัวนั้นจะไม่ถูกจัดอันดับ)")
+
 # ─── ดัชนี S&P 500 เอง (สำหรับกราฟแท่งเทียน) ──────────────────────────────────
 # ล้มเหลวได้โดยไม่พังทั้งสคริปต์ — แค่ไม่มีกราฟ
 # ดึงยาวกว่าที่จะแสดง เพื่อให้ SMA200 มีค่าครบตั้งแต่แท่งแรกที่โชว์
@@ -1455,9 +1467,15 @@ except Exception as e:
 print(f"\n[4/5] คำนวณ momentum ({LOOKBACK_DAYS}D) และ volatility ({VOL_WINDOW}D)")
 rows = []
 for ticker in data.columns:
-    prices = data[ticker].dropna()
-    if len(prices) < LOOKBACK_DAYS:
+    col = data[ticker]
+    # ต้องมีราคาล่าสุดจริง ๆ ถึงจะเอามาจัดอันดับ (snapshot ซื้อที่ราคานี้)
+    if pd.isna(col.iloc[-1]):
         continue
+    first = col.first_valid_index()
+    prices = col.loc[first:]            # ตัดเฉพาะช่วงก่อน IPO ทิ้ง ไม่ยุบแถวตรงกลาง
+    if prices.isna().any() or len(prices) < LOOKBACK_DAYS:
+        continue
+    # ตรงนี้ prices อยู่บนปฏิทินเดียวกับตัวอื่นแล้ว 125 แถว = 125 วันทำการเสมอ
     recent = prices.iloc[-LOOKBACK_DAYS:]
     abs_mom = (recent.iloc[-1] / recent.iloc[0] - 1) * 100
 

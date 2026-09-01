@@ -1609,6 +1609,17 @@ if _bad:
 else:
     print(f"      ไม่พบราคาที่เพี้ยน (สูงสุด +{_worst.max()*100:.0f}% ในวันเดียว)")
 
+# ── อุดรูข้อมูลสั้น ๆ ────────────────────────────────────────────────────────
+# Yahoo มีวันที่หายเป็นราย ๆ ตัว (เช่น WDC ไม่มีแท่ง 2026-08-28 ทั้งที่ตลาดเปิด)
+# quant_scores ตัดตัวที่มี NaN ในหน้าต่างทิ้งทั้งตัว หุ้นดี ๆ เลยหลุดจากการจัดอันดับ
+# เพราะข้อมูลหายวันเดียว เติมเฉพาะรูสั้น ๆ ส่วนที่หายยาว (เลิกเทรด/ถูกถอด) ปล่อย
+# เป็น NaN ไว้เหมือนเดิม จะได้ไม่ลากราคาหุ้นที่ตายแล้วเป็นเส้นตรงต่อไปเรื่อย ๆ
+MAX_GAP_FILL = 5
+_holes = int(prices.isna().sum().sum())
+prices = prices.ffill(limit=MAX_GAP_FILL)
+print(f"      อุดรูข้อมูล {_holes - int(prices.isna().sum().sum())} ช่อง "
+      f"(เติมได้ไม่เกิน {MAX_GAP_FILL} วันติดกัน)")
+
 print(f"\n[4/5] ดาวน์โหลด benchmark ({BENCHMARK}, total return)")
 try:
     braw = yf.download(BENCHMARK, period=f"{YEARS}y", auto_adjust=True, progress=False)
