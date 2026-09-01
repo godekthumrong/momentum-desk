@@ -1422,8 +1422,10 @@ print(f"      {data.shape[0]} แถว x {data.shape[1]} ตัว, ปิด�
 # กินอีกวันโดยไม่รู้ตัว — หุ้นแต่ละตัวเลยถูกวัดด้วยช่วงเวลาไม่เท่ากันและอันดับเพี้ยน
 # เติมเฉพาะรูสั้น ๆ ถ้าหายยาวเกินนี้แปลว่าเลิกเทรด/ถูกถอด ปล่อยเป็น NaN ให้ตกรอบไป
 MAX_GAP_FILL = 5
-_holes = int(data.isna().sum().sum())
+_missing = data.isna()
+_holes = int(_missing.sum().sum())
 data = data.ffill(limit=MAX_GAP_FILL)
+FILLED = _missing & data.notna()   # วันที่เราเติมเอง ไม่ใช่ราคาที่เทรดจริง
 _left = int(data.isna().sum().sum())
 print(f"      อุดรูข้อมูล {_holes - _left} ช่อง (เหลือ {_left} ช่องที่หายยาวเกิน "
       f"{MAX_GAP_FILL} วัน — ตัวนั้นจะไม่ถูกจัดอันดับ)")
@@ -1497,8 +1499,14 @@ df_rank["Rank"] = df_rank.index + 1
 print(f"      จัดอันดับได้ {len(df_rank)} ตัว")
 
 # ─── 4. Inverse-volatility sizing ─────────────────────────────────────────────
-daily_returns = data.pct_change(fill_method=None)
-volatility = daily_returns.rolling(window=VOL_WINDOW).std().iloc[-1]
+# วันที่เติมเองจะให้ผลตอบแทน 0% ปลอม ๆ และวันถัดไปจะกลายเป็นผลตอบแทน 2 วันรวบเดียว
+# ทั้งคู่ทำให้ volatility ต่ำกว่าความจริง → น้ำหนัก (1/vol) และจำนวนหุ้นพองเกินไป
+# เลยนับเฉพาะผลตอบแทนที่หัวท้ายเป็นราคาที่เทรดจริงทั้งคู่ ที่เหลือตัดทิ้ง แล้วผ่อน
+# min_periods ลง เพื่อให้ตัวที่ข้อมูลหายไม่กี่วันยังคำนวณ vol ได้ ไม่ถูกเขี่ยออกทั้งตัว
+_fake_ret = FILLED | FILLED.shift(1, fill_value=False)
+daily_returns = data.pct_change(fill_method=None).mask(_fake_ret)
+volatility = (daily_returns.rolling(window=VOL_WINDOW,
+                                    min_periods=VOL_WINDOW // 2).std().iloc[-1])
 latest_price = data.iloc[-1]
 
 
