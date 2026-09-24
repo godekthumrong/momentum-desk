@@ -1,0 +1,61 @@
+name: Validate ranking data
+
+on:
+  push:
+    branches: [main, codex/alpaca-ranking]
+    paths:
+      - 'alpaca_prices.py'
+      - 'momentum_desk.py'
+      - 'requirements.txt'
+      - 'tests/**'
+      - '.github/workflows/validate-ranking.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install --quiet -r requirements.txt
+      - name: Test data boundaries
+        run: python -m unittest discover -s tests -v
+      - name: Validate live ranking with repository secrets
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          MOMENTUM_HEADLESS: '1'
+          MOMENTUM_PORTFOLIO_VALUE: '100000'
+        run: python momentum_desk.py
+      - name: Summarize data coverage
+        run: |
+          python - <<'PY'
+          import json, os
+          p = json.load(open('momentum-payload.json'))
+          q = p['data_quality']
+          assert len(p['universe']) >= 400
+          assert p['meta']['price_source'] == 'Alpaca SIP'
+          assert q['filled_cells'] == 0
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+              f.write(f"As of {q['as_of']}: {q['fresh']}/{q['requested']} fresh, {q['eligible']} eligible. No filled prices.\n\n")
+              for s in q['symbols']:
+                  if not s['eligible']:
+                      f.write(f"- {s['ticker']}: {', '.join(s['reasons'])}; last {s['last_date']}\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ranking-validation-${{ github.run_number }}
+          path: |
+            momentum-desk.html
+            momentum-payload.json
+            momentum-data-quality.json
+          retention-days: 14
+          if-no-files-found: warn

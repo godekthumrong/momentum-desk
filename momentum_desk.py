@@ -1,7 +1,7 @@
 """
 Momentum Desk — S&P 500 momentum ranking + inverse-volatility position sizing.
 
-รันไฟล์นี้ไฟล์เดียวจบ: ดึงข้อมูล -> คำนวณ -> สร้าง momentum-desk.html -> เปิดในเบราว์เซอร์
+รันพร้อม alpaca_prices.py และตั้งค่า ALPACA_API_KEY / ALPACA_SECRET_KEY: ดึงข้อมูล -> คำนวณ -> สร้าง momentum-desk.html -> เปิดในเบราว์เซอร์
 ถ้าไม่มี yfinance จะติดตั้งให้อัตโนมัติ
 
 วิธีรัน: ดับเบิลคลิก run_momentum_desk.bat
@@ -13,7 +13,6 @@ PORTFOLIO_VALUE = 65_897      # มูลค่าพอร์ตรวม (USD)
 LOOKBACK_DAYS   = 125         # ช่วงคำนวณ momentum (วันทำการ)
 VOL_WINDOW      = 20          # ช่วงคำนวณ volatility (วันทำการ)
 TOP_N           = 20          # จำนวนหุ้นใน momentum portfolio
-HISTORY_PERIOD  = "1y"        # ช่วงข้อมูลหุ้นรายตัวที่ดึงจาก Yahoo
 SMA_WINDOW      = 200         # เส้นค่าเฉลี่ยบนกราฟดัชนี (วันทำการ)
 INDEX_SHOW_BARS = 252         # จำนวนแท่งเทียนที่แสดง (~1 ปี)
 INDEX_FETCH_PERIOD = "2y"     # ดึงยาวกว่าที่แสดง เพื่อให้ SMA ครบตั้งแต่แท่งแรก
@@ -131,7 +130,8 @@ print("=" * 68)
 print("\n[1/5] ตรวจสอบ dependencies")
 for pkg, mod in [("pandas", "pandas"), ("numpy", "numpy"),
                  ("requests", "requests"), ("lxml", "lxml"),
-                 ("yfinance", "yfinance")]:
+                 ("yfinance", "yfinance"),
+                 ("exchange_calendars>=4.11,<5", "exchange_calendars")]:
     _ensure(pkg, mod)
 print("      พร้อม")
 
@@ -139,6 +139,7 @@ import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
+from alpaca_prices import load_ranking_prices
 
 
 # ═══ dashboard template ═══
@@ -701,6 +702,8 @@ BODY = """
   </section>
 
   <footer>
+    <p><strong>Stock data: Alpaca SIP.</strong> Ranking and volatility use prices adjusted for splits, dividends and spin-offs. Share counts use unadjusted closing prices. Missing prices are never carried forward. S&amp;P 500 chart: Yahoo Finance.</p>
+    <details><summary>Data coverage and excluded stocks</summary><p id="data-coverage"></p></details>
     <p><strong>Reading this:</strong> "Quant score" is the annualized exponential-regression slope of the __LOOKBACK__-day price series, scaled by its R&sup2; &mdash; it rewards trends that are both strong and smooth. Weight is inverse to __VOLWIN__-day realized volatility, normalized to sum to 100% across the watchlist, then converted to shares at the snapshot price. A tag beside a ticker means it also lands in the top-N ranking above.</p>
     <p>Prices and volatility are a fixed snapshot from the __ASOF__ close across __UNIVERSE__ index members &mdash; editing the watchlist re-slices that snapshot, it does not fetch new prices. Rerun the script to refresh.</p>
   </footer>
@@ -711,6 +714,15 @@ SCRIPT = r"""
 (function () {
   var D = window.__MOMENTUM_DATA__;
   var META = D.meta;
+  var quality = D.data_quality;
+  if (quality) {
+    var excluded = quality.symbols.filter(function(s) { return !s.eligible; });
+    document.getElementById('data-coverage').textContent =
+      quality.eligible + ' / ' + quality.requested + ' eligible for ranking. ' +
+      (excluded.length ? 'Excluded: ' + excluded.map(function(s) {
+        return s.ticker + ' (' + s.reasons.join(', ') + '; last: ' + (s.last_date || 'none') + ')';
+      }).join('; ') : 'No excluded stocks.');
+  }
   var STORE = "momentum-desk-v2";
 
   // universe rows: [ticker, rank, momentum, score, volatility, price]
@@ -1373,7 +1385,7 @@ if not tickers:
           ["หน้าเว็บอาจเปลี่ยนโครงสร้าง / the page layout may have changed"])
 print(f"      {len(tickers)} ตัว")
 
-print(f"\n[3/5] ดาวน์โหลดราคาย้อนหลัง {HISTORY_PERIOD} (ใช้เวลาสักครู่)")
+print("\n[3/5] ดาวน์โหลดราคาหุ้นจาก Alpaca SIP")
 def _download(fn, what, attempts=4):
     """Retry with growing waits.
 
@@ -1399,36 +1411,14 @@ def _download(fn, what, attempts=4):
     return None
 
 
-raw = _download(lambda: yf.download(tickers, period=HISTORY_PERIOD,
-                                    auto_adjust=True, progress=True), "prices")
-if raw is None:
-    _bail("ดาวน์โหลดราคาไม่สำเร็จหลังลองหลายครั้ง / prices failed after retries",
-          NET_CAUSES + ["Yahoo อาจบล็อก IP ชั่วคราว ปกติหายเองใน 1 ชั่วโมง",
-                        "Yahoo may have rate-limited this IP; it usually clears within an hour"])
-data = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw[["Close"]]
-data = data.dropna(axis=1, how="all")
-
-if data.empty or data.shape[1] == 0:
-    _bail("ดาวน์โหลดราคาแล้วแต่ไม่มีข้อมูล / prices came back empty",
-          ["Yahoo Finance อาจกำลังจำกัดการเรียก ลองใหม่ในอีก 2-3 นาที",
-           "Yahoo Finance may be rate-limiting — wait a few minutes and rerun"])
-
-AS_OF = data.index[-1].strftime("%Y-%m-%d")
-print(f"      {data.shape[0]} แถว x {data.shape[1]} ตัว, ปิดล่าสุด {AS_OF}")
-
-# ── อุดรูข้อมูลสั้น ๆ ให้ทุกตัวอยู่บนปฏิทินวันทำการชุดเดียวกัน ────────────────
-# Yahoo มีวันที่หายเป็นราย ๆ ตัว (เช่น WDC ไม่มีแท่ง 2026-08-28 ทั้งที่ตลาดเปิด)
-# ถ้าปล่อยไว้แล้วไป dropna() ทีหลัง หน้าต่าง 125 แถวของตัวนั้นจะเลื่อนถอยไป
-# กินอีกวันโดยไม่รู้ตัว — หุ้นแต่ละตัวเลยถูกวัดด้วยช่วงเวลาไม่เท่ากันและอันดับเพี้ยน
-# เติมเฉพาะรูสั้น ๆ ถ้าหายยาวเกินนี้แปลว่าเลิกเทรด/ถูกถอด ปล่อยเป็น NaN ให้ตกรอบไป
-MAX_GAP_FILL = 5
-_missing = data.isna()
-_holes = int(_missing.sum().sum())
-data = data.ffill(limit=MAX_GAP_FILL)
-FILLED = _missing & data.notna()   # วันที่เราเติมเอง ไม่ใช่ราคาที่เทรดจริง
-_left = int(data.isna().sum().sum())
-print(f"      อุดรูข้อมูล {_holes - _left} ช่อง (เหลือ {_left} ช่องที่หายยาวเกิน "
-      f"{MAX_GAP_FILL} วัน — ตัวนั้นจะไม่ถูกจัดอันดับ)")
+try:
+    data, latest_price, eligible_tickers, data_quality = load_ranking_prices(
+        tickers, lookback=LOOKBACK_DAYS)
+except Exception as e:
+    _bail("Alpaca ranking data failed validation",
+          ["Check Actions secrets and momentum-data-quality.json / ตรวจ Secrets และรายงานข้อมูล"],
+          f"{type(e).__name__}: {e}")
+AS_OF = data_quality["as_of"]
 
 # ─── ดัชนี S&P 500 เอง (สำหรับกราฟแท่งเทียน) ──────────────────────────────────
 # ล้มเหลวได้โดยไม่พังทั้งสคริปต์ — แค่ไม่มีกราฟ
@@ -1444,6 +1434,12 @@ try:
         idx.columns = idx.columns.droplevel(-1)
     idx = idx[["Open", "High", "Low", "Close"]].dropna()
 
+    if idx.index.tz is not None:
+        idx.index = idx.index.tz_convert("America/New_York").tz_localize(None)
+    idx.index = idx.index.normalize()
+    idx = idx.loc[:AS_OF]
+    if idx.empty or idx.index[-1].strftime("%Y-%m-%d") != AS_OF:
+        raise RuntimeError("Index date does not match ranking date")
     sma = idx["Close"].rolling(window=SMA_WINDOW).mean()
 
     # แสดงแค่ช่วงท้าย แต่ SMA คำนวณจากข้อมูลเต็มความยาว
@@ -1468,17 +1464,9 @@ except Exception as e:
 # ─── 3. คำนวณ momentum ────────────────────────────────────────────────────────
 print(f"\n[4/5] คำนวณ momentum ({LOOKBACK_DAYS}D) และ volatility ({VOL_WINDOW}D)")
 rows = []
-for ticker in data.columns:
-    col = data[ticker]
-    # ต้องมีราคาล่าสุดจริง ๆ ถึงจะเอามาจัดอันดับ (snapshot ซื้อที่ราคานี้)
-    if pd.isna(col.iloc[-1]):
-        continue
-    first = col.first_valid_index()
-    prices = col.loc[first:]            # ตัดเฉพาะช่วงก่อน IPO ทิ้ง ไม่ยุบแถวตรงกลาง
-    if prices.isna().any() or len(prices) < LOOKBACK_DAYS:
-        continue
-    # ตรงนี้ prices อยู่บนปฏิทินเดียวกับตัวอื่นแล้ว 125 แถว = 125 วันทำการเสมอ
-    recent = prices.iloc[-LOOKBACK_DAYS:]
+for ticker in eligible_tickers:
+    # Every ranked stock uses exactly the same completed exchange sessions.
+    recent = data[ticker].iloc[-LOOKBACK_DAYS:]
     abs_mom = (recent.iloc[-1] / recent.iloc[0] - 1) * 100
 
     y = np.log(recent.values)
@@ -1492,6 +1480,9 @@ for ticker in data.columns:
                  "Abs_Momentum_Pct": round(float(abs_mom), 2),
                  "Quant_Score": round(float((np.exp(slope) ** 252 - 1) * r2 * 100), 2)})
 
+if len(rows) < 400:
+    _bail("Too few stocks eligible for ranking", ["See momentum-data-quality.json for excluded symbols"])
+
 df_rank = (pd.DataFrame(rows)
              .sort_values("Quant_Score", ascending=False)
              .reset_index(drop=True))
@@ -1499,15 +1490,9 @@ df_rank["Rank"] = df_rank.index + 1
 print(f"      จัดอันดับได้ {len(df_rank)} ตัว")
 
 # ─── 4. Inverse-volatility sizing ─────────────────────────────────────────────
-# วันที่เติมเองจะให้ผลตอบแทน 0% ปลอม ๆ และวันถัดไปจะกลายเป็นผลตอบแทน 2 วันรวบเดียว
-# ทั้งคู่ทำให้ volatility ต่ำกว่าความจริง → น้ำหนัก (1/vol) และจำนวนหุ้นพองเกินไป
-# เลยนับเฉพาะผลตอบแทนที่หัวท้ายเป็นราคาที่เทรดจริงทั้งคู่ ที่เหลือตัดทิ้ง แล้วผ่อน
-# min_periods ลง เพื่อให้ตัวที่ข้อมูลหายไม่กี่วันยังคำนวณ vol ได้ ไม่ถูกเขี่ยออกทั้งตัว
-_fake_ret = FILLED | FILLED.shift(1, fill_value=False)
-daily_returns = data.pct_change(fill_method=None).mask(_fake_ret)
-volatility = (daily_returns.rolling(window=VOL_WINDOW,
-                                    min_periods=VOL_WINDOW // 2).std().iloc[-1])
-latest_price = data.iloc[-1]
+# Rank and volatility use adjusted closes. Share counts use the actual raw close.
+daily_returns = data.pct_change(fill_method=None)
+volatility = daily_returns.rolling(window=VOL_WINDOW).std().iloc[-1]
 
 
 def size_portfolio(tickers_in, label):
@@ -1629,7 +1614,11 @@ payload = {
         "as_of": AS_OF, "lookback": LOOKBACK_DAYS, "vol_window": VOL_WINDOW,
         "top_n": TOP_N, "universe": len(universe_rows),
         "portfolio_value": float(PORTFOLIO_VALUE),
+        "price_source": "Alpaca SIP", "price_adjustment": "all",
+        "snapshot_price": "raw close", "index_source": "Yahoo Finance",
+        "requested": len(tickers), "excluded": len(tickers) - len(eligible_tickers),
     },
+    "data_quality": data_quality,
     "universe": universe_rows,
     "watchlist": [t for t in WATCHLIST if any(u[0] == t for u in universe_rows)],
     "index": index_rows,          # [date, open, high, low, close, sma] ต่อวัน
@@ -1693,3 +1682,4 @@ if OPEN_BROWSER:
 print("\nเสร็จเรียบร้อย")
 if sys.platform == "win32" and sys.stdin.isatty():
     input("\nกด Enter เพื่อปิดหน้าต่าง...")
+

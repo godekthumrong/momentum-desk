@@ -9,3 +9,6 @@ lxml
 # only momentum_backtest.py needs these, and only as fallback HTML parsers
 beautifulsoup4
 html5lib
+
+# Exchange sessions, holidays, DST and early closes for daily ranking
+exchange_calendars>=4.11,<5
