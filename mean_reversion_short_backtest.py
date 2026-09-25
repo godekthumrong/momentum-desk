@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import html
 import io
 import json
@@ -327,14 +328,35 @@ class Position:
     entry_notional: float
     entry_cost: float
     financing_cost: float = 0.0
+    margin_interest: float = 0.0
+    borrow_cost: float = 0.0
 
 
 def _max_drawdown(series: pd.Series) -> float:
     return float((series / series.cummax() - 1.0).min()) if len(series) else 0.0
 
 
+def _trade_commission(shares: float, price: float, cost_bps_side: float,
+                      ibkr_tiered: bool) -> float:
+    trade_value = shares * price
+    if ibkr_tiered:
+        # IBKR Pro US stocks, lowest monthly-volume tier. Exchange and
+        # regulatory pass-throughs vary by route/date and are not modeled.
+        return min(max(0.0035 * shares, 0.35), 0.01 * trade_value)
+    return trade_value * cost_bps_side / 10_000.0
+
+
+def _tiered_margin_interest(balance: float, calendar_days: int) -> float:
+    """User-supplied IBKR USD tiers, accrued actual/360."""
+    first_tier = min(max(balance, 0.0), 100_000.0)
+    second_tier = max(balance - 100_000.0, 0.0)
+    annual_charge = first_tier * 0.0513 + second_tier * 0.0463
+    return annual_charge * calendar_days / 360.0
+
+
 def simulate(orders: list[Candidate], trading_days: list[str], cost_bps_side: float,
-             annual_financing_rate: float = 0.0,
+             annual_financing_rate: float = 0.0, ibkr_tiered: bool = False,
+             ibkr_margin_interest: bool = False, annual_borrow_rate: float = 0.0,
              initial_cash: float = 100_000.0) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     by_entry: dict[str, list[Candidate]] = defaultdict(list)
     for order in orders:
@@ -343,10 +365,9 @@ def simulate(orders: list[Candidate], trading_days: list[str], cost_bps_side: fl
     positions: dict[str, Position] = {}
     trades: list[dict] = []
     curve: list[dict] = []
-    fee_rate = cost_bps_side / 10_000.0
     blocked_exposure = blocked_duplicate = 0
 
-    for day in trading_days:
+    for day_i, day in enumerate(trading_days):
         entering = by_entry.get(day, [])
 
         # Targets and stop gaps execute at the open and free capital before new limits.
@@ -354,7 +375,9 @@ def simulate(orders: list[Candidate], trading_days: list[str], cost_bps_side: fl
             c = pos.candidate
             if c.exit_date == day and c.exit_timing == "open":
                 exit_notional = pos.shares * c.exit_price
-                exit_cost = exit_notional * fee_rate
+                exit_cost = _trade_commission(
+                    pos.shares, c.exit_price, cost_bps_side, ibkr_tiered
+                )
                 cash -= exit_notional + exit_cost
                 pnl = (pos.entry_notional - exit_notional - pos.entry_cost
                        - exit_cost - pos.financing_cost)
@@ -380,12 +403,20 @@ def simulate(orders: list[Candidate], trading_days: list[str], cost_bps_side: fl
             desired_fraction = min(0.10, 0.02 / risk_per_dollar) if risk_per_dollar > 0 else 0.0
             desired = max(0.0, equity_open * desired_fraction)
             capacity = max(0.0, equity_open - gross_open)
-            notional = min(desired, capacity / (1.0 + fee_rate))
+            notional = min(desired, capacity)
             if notional < max(100.0, equity_open * 0.001):
                 blocked_exposure += 1
                 continue
             shares = notional / c.entry_price
-            entry_cost = notional * fee_rate
+            if ibkr_tiered:
+                shares = math.floor(shares)
+            if shares <= 0:
+                blocked_exposure += 1
+                continue
+            notional = shares * c.entry_price
+            entry_cost = _trade_commission(
+                shares, c.entry_price, cost_bps_side, ibkr_tiered
+            )
             cash += notional - entry_cost
             gross_open += notional
             equity_open -= entry_cost
@@ -396,17 +427,41 @@ def simulate(orders: list[Candidate], trading_days: list[str], cost_bps_side: fl
             c = pos.candidate
             if c.exit_date == day and c.exit_timing in ("intraday", "close"):
                 exit_notional = pos.shares * c.exit_price
-                exit_cost = exit_notional * fee_rate
+                exit_cost = _trade_commission(
+                    pos.shares, c.exit_price, cost_bps_side, ibkr_tiered
+                )
                 cash -= exit_notional + exit_cost
                 pnl = (pos.entry_notional - exit_notional - pos.entry_cost
                        - exit_cost - pos.financing_cost)
                 trades.append(_trade_row(pos, pnl, exit_cost))
                 del positions[symbol]
 
-        # Financing is charged only on short market value carried overnight.
-        for pos in positions.values():
-            overnight_notional = pos.shares * pos.candidate.entry_close
-            financing = overnight_notional * annual_financing_rate / 252.0
+        # Charges accrue on actual overnight short exposure. Calendar days are
+        # used so Friday-to-Monday holdings incur three days, consistent with
+        # IBKR's actual/360 convention.
+        next_day = trading_days[day_i + 1] if day_i + 1 < len(trading_days) else day
+        calendar_days = max((pd.Timestamp(next_day) - pd.Timestamp(day)).days, 0)
+        marks = {
+            symbol: pos.shares * pos.candidate.entry_close
+            for symbol, pos in positions.items()
+        }
+        gross_overnight = sum(marks.values())
+        tiered_margin_total = (
+            _tiered_margin_interest(gross_overnight, calendar_days)
+            if ibkr_margin_interest else 0.0
+        )
+        for symbol, pos in positions.items():
+            overnight_notional = marks[symbol]
+            if ibkr_margin_interest and gross_overnight > 0:
+                margin_interest = tiered_margin_total * overnight_notional / gross_overnight
+            else:
+                margin_interest = (
+                    overnight_notional * annual_financing_rate * calendar_days / 360.0
+                )
+            borrow_cost = overnight_notional * annual_borrow_rate * calendar_days / 360.0
+            financing = margin_interest + borrow_cost
+            pos.margin_interest += margin_interest
+            pos.borrow_cost += borrow_cost
             pos.financing_cost += financing
             cash -= financing
 
@@ -431,6 +486,9 @@ def simulate(orders: list[Candidate], trading_days: list[str], cost_bps_side: fl
     gross_loss = float(-trades_df.loc[trades_df.get("net_pnl", pd.Series(dtype=float)) < 0, "net_pnl"].sum()) if len(trades_df) else 0.0
     metrics = {
         "cost_bps_per_side": cost_bps_side, "annual_financing_rate": annual_financing_rate,
+        "ibkr_tiered_commission": ibkr_tiered,
+        "ibkr_margin_interest": ibkr_margin_interest,
+        "annual_borrow_rate": annual_borrow_rate,
         "initial_balance": initial_cash, "ending_balance": end,
         "cagr": cagr, "max_drawdown": _max_drawdown(curve_df["equity"]), "sharpe": float(sharpe),
         "trades": len(trades_df), "wins": wins, "losses": losses,
@@ -440,6 +498,10 @@ def simulate(orders: list[Candidate], trading_days: list[str], cost_bps_side: fl
         "avg_gross_exposure": float(curve_df["gross_exposure"].replace([np.inf], np.nan).fillna(0).mean()),
         "max_gross_exposure": float(curve_df["gross_exposure"].replace([np.inf], np.nan).fillna(0).max()),
         "blocked_by_exposure": blocked_exposure, "blocked_duplicate_symbol": blocked_duplicate,
+        "total_commissions": float(trades_df.get("entry_cost", pd.Series(dtype=float)).sum()
+                                   + trades_df.get("exit_cost", pd.Series(dtype=float)).sum()),
+        "total_margin_interest": float(trades_df.get("margin_interest", pd.Series(dtype=float)).sum()),
+        "total_borrow_cost": float(trades_df.get("borrow_cost", pd.Series(dtype=float)).sum()),
         "exit_reasons": trades_df["exit_reason"].value_counts().to_dict() if len(trades_df) else {},
     }
     return curve_df, trades_df, metrics
@@ -452,7 +514,9 @@ def _trade_row(pos: Position, pnl: float, exit_cost: float) -> dict:
         "exit_date": c.exit_date, "entry_price": c.entry_price, "exit_price": c.exit_price,
         "shares": pos.shares, "entry_notional": pos.entry_notional,
         "entry_cost": pos.entry_cost, "exit_cost": exit_cost,
-        "financing_cost": pos.financing_cost, "net_pnl": pnl,
+        "financing_cost": pos.financing_cost,
+        "margin_interest": pos.margin_interest, "borrow_cost": pos.borrow_cost,
+        "net_pnl": pnl,
         "net_return": pnl / pos.entry_notional if pos.entry_notional else 0.0,
         "exit_reason": c.exit_reason, "rsi3": c.rank_rsi3, "atr10": c.atr10,
     }
@@ -617,7 +681,7 @@ def write_report(outdir: Path, meta: dict, scenarios: dict, curves: dict, benchm
     rows = []
     for name, m in scenarios.items():
         pf = f"{m['profit_factor']:.2f}" if m["profit_factor"] is not None else "—"
-        rows.append(f"<tr><td>{html.escape(name)}</td><td>${m['ending_balance']:,.0f}</td><td>{pct(m['cagr'])}</td><td>{pct(m['max_drawdown'])}</td><td>{m['sharpe']:.2f}</td><td>{m['trades']:,}</td><td>{pct(m['win_rate'])}</td><td>{pf}</td></tr>")
+        rows.append(f"<tr><td>{html.escape(name)}</td><td>${m['ending_balance']:,.0f}</td><td>{pct(m['cagr'])}</td><td>{pct(m['max_drawdown'])}</td><td>{m['sharpe']:.2f}</td><td>{m['trades']:,}</td><td>{pct(m['win_rate'])}</td><td>{pf}</td><td>${m['total_commissions']:,.0f}</td><td>${m['total_margin_interest']:,.0f}</td><td>${m['total_borrow_cost']:,.0f}</td></tr>")
     chart_series = {name: df["equity"] for name, df in curves.items()}
     spy_chart = benchmark.copy()
     spy_chart.index = pd.to_datetime(spy_chart.index).strftime("%Y-%m-%d")
@@ -626,11 +690,11 @@ def write_report(outdir: Path, meta: dict, scenarios: dict, curves: dict, benchm
     report = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mean-Reversion Short Backtest</title><style>
     body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#f1f5f9;color:#0f172a}}main{{max-width:1080px;margin:auto;padding:28px}}.card{{background:white;border-radius:16px;padding:22px;margin:16px 0;box-shadow:0 1px 4px #cbd5e1}}h1{{margin:.1em 0}}.warn{{background:#fff7ed;border-left:5px solid #f97316}}table{{border-collapse:collapse;width:100%;font-size:14px}}th,td{{padding:9px;border-bottom:1px solid #e2e8f0;text-align:right}}th:first-child,td:first-child{{text-align:left}}.small{{color:#475569;font-size:13px}}code{{background:#e2e8f0;padding:2px 5px;border-radius:4px}}
     </style></head><body><main><div class="card"><h1>Mean-Reversion Short</h1><p>Alpaca SIP · {_iso_day(meta['start'])} to {_iso_day(meta['end'])} · current active US stocks</p></div>
-    <div class="card warn"><strong>Important:</strong> This run has survivorship bias because the universe is today's active stocks. Historical delistings, historical short availability and borrow fees are unavailable from Alpaca and are not modeled.</div>
-    <div class="card"><h2>Results</h2><table><thead><tr><th>Scenario</th><th>Ending</th><th>CAGR</th><th>Max DD</th><th>Sharpe</th><th>Trades</th><th>Win rate</th><th>Profit factor</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>
+    <div class="card warn"><strong>Important:</strong> This run has survivorship bias because the universe is today's active stocks. Historical delistings and point-in-time short availability are unavailable from Alpaca. The primary scenario therefore assumes every selected stock is borrowable at 0.25% annually; actual hard-to-borrow costs can be much higher.</div>
+    <div class="card"><h2>Results</h2><table><thead><tr><th>Scenario</th><th>Ending</th><th>CAGR</th><th>Max DD</th><th>Sharpe</th><th>Trades</th><th>Win rate</th><th>Profit factor</th><th>Commission</th><th>Margin interest</th><th>Borrow</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>
     <div class="card"><h2>Equity curve</h2>{svg_line(chart_series)}</div>
     <div class="card"><h2>Yearly returns</h2>{yearly_html}</div>
-    <div class="card"><h2>Rules and execution assumptions</h2><ul><li>AMEX/NASDAQ/NYSE current active stocks; ETFs/test issues removed with current Nasdaq Trader directories.</li><li>Raw point-in-time close ≥ $10 and raw 20-day average volume &gt; 500,000. Split/dividend-adjusted OHLC is used for indicators and returns.</li><li>ADX(7) &gt; 50; ATR(10)/close &gt; 5%; last two closes up; RSI(3) &gt; 85.</li><li>Top 10 signals each day by RSI(3). Next-session short limit at the signal close; fill at open when open is above the limit, otherwise at the limit if high touches it.</li><li>Size = 2% equity risk to a 2.5×ATR stop, capped at 10% per position and 100% gross short exposure at entry.</li><li>No stop on entry day. From the next session: stop gap at open or stop intraday; a 4% close profit exits next open; otherwise exit at the second session's close.</li><li>User scenario uses 25 bps per side plus 4% annual financing on short market value carried overnight. Stock borrow fees remain excluded.</li></ul></div>
+    <div class="card"><h2>Rules and execution assumptions</h2><ul><li>AMEX/NASDAQ/NYSE current active stocks; ETFs/test issues removed with current Nasdaq Trader directories.</li><li>Raw point-in-time close ≥ $10 and raw 20-day average volume &gt; 500,000. Split/dividend-adjusted OHLC is used for indicators and returns.</li><li>ADX(7) &gt; 50; ATR(10)/close &gt; 5%; last two closes up; RSI(3) &gt; 85.</li><li>Top 10 signals each day by RSI(3). Next-session short limit at the signal close; fill at open when open is above the limit, otherwise at the limit if high touches it.</li><li>Size = 2% equity risk to a 2.5×ATR stop, capped at 10% per position and 100% gross short exposure at entry. This is a short overlay on an existing 100% long book, so combined gross exposure can reach 200%. The long sleeve's P&amp;L is excluded.</li><li>No stop on entry day. From the next session: stop gap at open or stop intraday; a 4% close profit exits next open; otherwise exit at the second session's close.</li><li>Primary scenario commission: IBKR Pro Tiered at $0.0035/share, minimum $0.35/order and maximum 1% of trade value. Variable exchange/regulatory pass-through charges are excluded.</li><li>Per the user's conservative instruction, margin interest is charged daily on actual overnight short gross exposure: 5.13% on the first $100,000 and 4.63% above it, actual/360. This is a modeling assumption; an actual broker statement assesses margin interest from the settled debit cash balance.</li><li>Short-stock borrow is modeled separately at 0.25% annually, actual/360, on overnight short market value.</li></ul></div>
     <div class="card small"><h2>Data audit</h2><pre>{html.escape(json.dumps(meta, indent=2))}</pre></div></main></body></html>"""
     outdir.joinpath("mean-reversion-short-report.html").write_text(report, encoding="utf-8")
     base_trades.to_csv(outdir / "mean-reversion-short-trades.csv", index=False)
@@ -670,20 +734,28 @@ def run(args):
 
     spy = frame_from_bars(client.bars(["SPY"], warmup, end, adjustment="all").get("SPY", []))
     benchmark = benchmark_curve(spy, args.start)
+    cache = {
+        "trading_days": trading_days,
+        "orders": [asdict(order) for order in orders],
+    }
+    with gzip.open(outdir / "mean-reversion-short-orders.json.gz", "wt", encoding="utf-8") as handle:
+        json.dump(cache, handle, separators=(",", ":"))
+
     scenario_specs = {
-        "Gross / no costs": (0.0, 0.0),
-        "Base / 5 bps each side": (5.0, 0.0),
-        "Fee 25 bps each side": (25.0, 0.0),
-        "Fee 25 bps each side + 4% financing": (25.0, 0.04),
+        "Gross / no costs": {},
+        "IBKR Tiered commission only": {"ibkr_tiered": True},
+        "IBKR Tiered + margin + 0.25% borrow": {
+            "ibkr_tiered": True,
+            "ibkr_margin_interest": True,
+            "annual_borrow_rate": 0.0025,
+        },
     }
     scenario_metrics, curves, trades = {}, {}, {}
-    for name, (bps, financing_rate) in scenario_specs.items():
-        curve, trade_log, metrics = simulate(
-            orders, trading_days, bps, annual_financing_rate=financing_rate
-        )
+    for name, spec in scenario_specs.items():
+        curve, trade_log, metrics = simulate(orders, trading_days, 0.0, **spec)
         scenario_metrics[name], curves[name], trades[name] = metrics, curve, trade_log
 
-    primary_name = "Fee 25 bps each side + 4% financing"
+    primary_name = "IBKR Tiered + margin + 0.25% borrow"
     base_curve = curves[primary_name]
     yearly = pd.DataFrame(index=sorted(set(pd.to_datetime(base_curve.index).year)))
     for name, curve in curves.items():
@@ -708,9 +780,14 @@ def run(args):
         "raw_qualifying_signals": raw_signal_count, "selected_orders": len(orders),
         "filled_selected_orders": sum(c.filled for c in orders),
         "survivorship_bias": True, "historical_short_availability": False,
-        "borrow_fees_included": False, "gross_exposure_cap": 1.0,
-        "primary_fee_rate_per_side": 0.0025,
-        "annual_financing_rate": 0.04,
+        "portfolio_structure": "existing 100% long sleeve plus up to 100% short overlay",
+        "long_sleeve_pnl_included": False,
+        "short_gross_exposure_cap": 1.0, "combined_gross_exposure_cap": 2.0,
+        "commission_model": "IBKR Pro Tiered: $0.0035/share, $0.35 minimum/order, 1% cap",
+        "margin_interest_model": "actual overnight short gross exposure; 5.13% first $100k, 4.63% above; actual/360",
+        "margin_interest_is_user_defined_conservative_assumption": True,
+        "annual_short_borrow_rate": 0.0025,
+        "exchange_and_regulatory_pass_through_fees_included": False,
     }
     write_report(outdir, meta, scenario_metrics, curves, benchmark,
                  trades[primary_name], yearly)
