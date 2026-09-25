@@ -1,0 +1,30 @@
+name: Mean-Reversion Signal Example
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install --quiet -r requirements.txt matplotlib
+      - name: Build actual Alpaca signal chart
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: python mean_reversion_signal_example.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mean-reversion-signal-example-${{ github.run_number }}
+          path: short-signal-example/
+          retention-days: 90
+          if-no-files-found: error
