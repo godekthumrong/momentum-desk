@@ -65,7 +65,10 @@ class Alpaca:
             if response.status_code == 200:
                 return response.json()
             if response.status_code in (401, 403):
-                raise RuntimeError("Alpaca authentication or SIP access failed")
+                raise RuntimeError(
+                    f"Alpaca authentication or SIP access failed (HTTP {response.status_code}): "
+                    f"{response.text[:300]}"
+                )
             if response.status_code == 429:
                 time.sleep(float(response.headers.get("Retry-After", 30)))
                 continue
@@ -83,9 +86,18 @@ class Alpaca:
 
     def bars(self, symbols: list[str], start: str, end: str,
              adjustment: str = "all") -> dict[str, list[dict]]:
+        # Free SIP access rejects a request whose `end` lies inside the
+        # 15-minute embargo (or in the future), even when the latest available
+        # daily bar is yesterday's.  Cap every request at now-20 minutes.
+        requested_end = pd.Timestamp(end)
+        if requested_end.tzinfo is None:
+            requested_end = requested_end.tz_localize("UTC") + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+        else:
+            requested_end = requested_end.tz_convert("UTC")
+        safe_end = min(requested_end, pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=20))
         params = {
             "symbols": ",".join(symbols), "timeframe": "1Day",
-            "start": f"{start}T00:00:00Z", "end": f"{end}T23:59:59Z",
+            "start": f"{start}T00:00:00Z", "end": safe_end.isoformat(),
             "adjustment": adjustment, "feed": "sip", "limit": 10000, "sort": "asc",
         }
         out: dict[str, list[dict]] = {s: [] for s in symbols}
@@ -494,7 +506,7 @@ def run(args):
     print(f"Universe: {len(universe):,} current active non-ETF stocks")
 
     warmup = _iso_day(pd.Timestamp(args.start) - pd.Timedelta(days=120))
-    end = args.end or _iso_day(pd.Timestamp.utcnow())
+    end = args.end or _iso_day(pd.Timestamp.now(tz="UTC"))
     all_candidates: list[Candidate] = []
     observed_days: set[str] = set()
     symbols_with_data = 0
