@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from mean_reversion_short_scanner import build_html, scan_frame
+from mean_reversion_short_scanner import build_html, evaluate_exit, scan_frame
 
 
 class DailyShortScannerTests(unittest.TestCase):
@@ -53,6 +53,28 @@ class DailyShortScannerTests(unittest.TestCase):
         page = build_html(payload)
         self.assertIn("No signals match every rule", page)
         self.assertIn("daily short scanner", page.lower())
+
+    def test_exit_rules_match_backtest_order(self):
+        profit = evaluate_exit(
+            "2024-01-02", 100, 4,
+            [["2024-01-02", 100, 102, 94, 95], ["2024-01-03", 94, 96, 92, 93]],
+        )
+        self.assertEqual(profit["label"], "Profit target · cover at open")
+        self.assertEqual(profit["exit_price"], 94)
+
+        stopped = evaluate_exit(
+            "2024-01-02", 100, 4,
+            [["2024-01-02", 100, 105, 98, 101], ["2024-01-03", 105, 111, 103, 106]],
+        )
+        self.assertEqual(stopped["label"], "Stop hit intraday")
+        self.assertEqual(stopped["exit_price"], 110)
+
+        timed = evaluate_exit(
+            "2024-01-02", 100, 4,
+            [["2024-01-02", 100, 105, 98, 101], ["2024-01-03", 101, 106, 97, 99]],
+        )
+        self.assertEqual(timed["label"], "Time exit at close")
+        self.assertEqual(timed["exit_price"], 99)
 
 
 if __name__ == "__main__":
