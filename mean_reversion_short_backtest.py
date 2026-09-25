@@ -326,6 +326,7 @@ class Position:
     shares: float
     entry_notional: float
     entry_cost: float
+    financing_cost: float = 0.0
 
 
 def _max_drawdown(series: pd.Series) -> float:
@@ -333,6 +334,7 @@ def _max_drawdown(series: pd.Series) -> float:
 
 
 def simulate(orders: list[Candidate], trading_days: list[str], cost_bps_side: float,
+             annual_financing_rate: float = 0.0,
              initial_cash: float = 100_000.0) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     by_entry: dict[str, list[Candidate]] = defaultdict(list)
     for order in orders:
@@ -354,7 +356,8 @@ def simulate(orders: list[Candidate], trading_days: list[str], cost_bps_side: fl
                 exit_notional = pos.shares * c.exit_price
                 exit_cost = exit_notional * fee_rate
                 cash -= exit_notional + exit_cost
-                pnl = pos.entry_notional - exit_notional - pos.entry_cost - exit_cost
+                pnl = (pos.entry_notional - exit_notional - pos.entry_cost
+                       - exit_cost - pos.financing_cost)
                 trades.append(_trade_row(pos, pnl, exit_cost))
                 del positions[symbol]
 
@@ -395,9 +398,17 @@ def simulate(orders: list[Candidate], trading_days: list[str], cost_bps_side: fl
                 exit_notional = pos.shares * c.exit_price
                 exit_cost = exit_notional * fee_rate
                 cash -= exit_notional + exit_cost
-                pnl = pos.entry_notional - exit_notional - pos.entry_cost - exit_cost
+                pnl = (pos.entry_notional - exit_notional - pos.entry_cost
+                       - exit_cost - pos.financing_cost)
                 trades.append(_trade_row(pos, pnl, exit_cost))
                 del positions[symbol]
+
+        # Financing is charged only on short market value carried overnight.
+        for pos in positions.values():
+            overnight_notional = pos.shares * pos.candidate.entry_close
+            financing = overnight_notional * annual_financing_rate / 252.0
+            pos.financing_cost += financing
+            cash -= financing
 
         liabilities_close = sum(pos.shares * pos.candidate.entry_close for pos in positions.values())
         equity_close = cash - liabilities_close
@@ -419,7 +430,8 @@ def simulate(orders: list[Candidate], trading_days: list[str], cost_bps_side: fl
     gross_profit = float(trades_df.loc[trades_df.get("net_pnl", pd.Series(dtype=float)) > 0, "net_pnl"].sum()) if len(trades_df) else 0.0
     gross_loss = float(-trades_df.loc[trades_df.get("net_pnl", pd.Series(dtype=float)) < 0, "net_pnl"].sum()) if len(trades_df) else 0.0
     metrics = {
-        "cost_bps_per_side": cost_bps_side, "initial_balance": initial_cash, "ending_balance": end,
+        "cost_bps_per_side": cost_bps_side, "annual_financing_rate": annual_financing_rate,
+        "initial_balance": initial_cash, "ending_balance": end,
         "cagr": cagr, "max_drawdown": _max_drawdown(curve_df["equity"]), "sharpe": float(sharpe),
         "trades": len(trades_df), "wins": wins, "losses": losses,
         "win_rate": wins / len(trades_df) if len(trades_df) else 0.0,
@@ -439,7 +451,8 @@ def _trade_row(pos: Position, pnl: float, exit_cost: float) -> dict:
         "symbol": c.symbol, "signal_date": c.signal_date, "entry_date": c.order_date,
         "exit_date": c.exit_date, "entry_price": c.entry_price, "exit_price": c.exit_price,
         "shares": pos.shares, "entry_notional": pos.entry_notional,
-        "entry_cost": pos.entry_cost, "exit_cost": exit_cost, "net_pnl": pnl,
+        "entry_cost": pos.entry_cost, "exit_cost": exit_cost,
+        "financing_cost": pos.financing_cost, "net_pnl": pnl,
         "net_return": pnl / pos.entry_notional if pos.entry_notional else 0.0,
         "exit_reason": c.exit_reason, "rsi3": c.rank_rsi3, "atr10": c.atr10,
     }
@@ -448,6 +461,132 @@ def _trade_row(pos: Position, pnl: float, exit_cost: float) -> dict:
 def benchmark_curve(frame: pd.DataFrame, start: str, initial: float = 100_000.0) -> pd.DataFrame:
     close = frame.loc[pd.Timestamp(start):, "close"].dropna()
     return pd.DataFrame({"equity": initial * close / close.iloc[0]}, index=close.index)
+
+
+def write_signal_example(client: Alpaca, trade: pd.Series, outdir: Path):
+    """Render one actual filled signal from the primary scenario."""
+    import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+
+    symbol = str(trade["symbol"])
+    signal_date = pd.Timestamp(trade["signal_date"])
+    entry_date = pd.Timestamp(trade["entry_date"])
+    exit_date = pd.Timestamp(trade["exit_date"])
+    start = _iso_day(signal_date - pd.Timedelta(days=75))
+    end = _iso_day(exit_date + pd.Timedelta(days=7))
+    frame = frame_from_bars(
+        client.bars([symbol], start, end, adjustment="all").get(symbol, [])
+    )
+    raw = frame_from_bars(
+        client.bars([symbol], start, end, adjustment="raw").get(symbol, [])
+    )
+    if frame.empty or signal_date not in frame.index:
+        raise RuntimeError(f"Cannot render signal example for {symbol}")
+    ind = indicators(frame)
+    raw_avg_volume20 = raw["volume"].rolling(20, min_periods=20).mean()
+    view = frame.loc[
+        signal_date - pd.Timedelta(days=45):exit_date + pd.Timedelta(days=3)
+    ].copy()
+    view_ind = ind.reindex(view.index)
+    x = mdates.date2num(view.index.to_pydatetime())
+
+    fig, (ax, ax2) = plt.subplots(
+        2, 1, figsize=(13.5, 8.2), sharex=True,
+        gridspec_kw={"height_ratios": [3.2, 1.2]},
+    )
+    fig.patch.set_facecolor("#f8fafc")
+    for axes in (ax, ax2):
+        axes.set_facecolor("white")
+        axes.grid(True, color="#e2e8f0", linewidth=0.8, alpha=0.8)
+
+    width = 0.62
+    for xi, (_, row) in zip(x, view.iterrows()):
+        up = row["close"] >= row["open"]
+        color = "#16a34a" if up else "#dc2626"
+        ax.vlines(xi, row["low"], row["high"], color=color, linewidth=1.1)
+        bottom = min(row["open"], row["close"])
+        height = max(
+            abs(row["close"] - row["open"]),
+            max(row["close"] * 0.0005, 0.01),
+        )
+        ax.add_patch(Rectangle(
+            (xi - width / 2, bottom), width, height,
+            facecolor=color, edgecolor=color, alpha=0.9,
+        ))
+
+    signal_close = float(frame.loc[signal_date, "close"])
+    atr = float(ind.loc[signal_date, "atr10"])
+    stop = float(trade["entry_price"]) + 2.5 * atr
+    colors = {"Signal": "#f59e0b", "Short entry": "#2563eb", "Exit": "#7c3aed"}
+    for label, day in (
+        ("Signal", signal_date), ("Short entry", entry_date), ("Exit", exit_date)
+    ):
+        ax.axvline(
+            day, color=colors[label], linewidth=1.8, alpha=0.9,
+            label=f"{label}: {day.date()}",
+        )
+    ax.axhline(
+        signal_close, color="#2563eb", linestyle="--", linewidth=1.2,
+        label=f"Limit = signal close ${signal_close:,.2f}",
+    )
+    ax.axhline(
+        stop, color="#dc2626", linestyle=":", linewidth=1.2,
+        label=f"Next-day stop ${stop:,.2f}",
+    )
+    ax.scatter(
+        [entry_date], [float(trade["entry_price"])], marker="v", s=110,
+        color="#2563eb", zorder=5,
+    )
+    ax.scatter(
+        [exit_date], [float(trade["exit_price"])], marker="^", s=110,
+        color="#7c3aed", zorder=5,
+    )
+    ax.set_ylabel("Adjusted price (USD)")
+    ax.legend(loc="upper left", fontsize=9, ncol=2, frameon=True)
+
+    ax2.plot(
+        view.index, view_ind["rsi3"], color="#2563eb", linewidth=1.8,
+        label="RSI(3)",
+    )
+    ax2.plot(
+        view.index, view_ind["adx7"], color="#7c3aed", linewidth=1.6,
+        label="ADX(7)",
+    )
+    ax2.axhline(85, color="#2563eb", linestyle="--", linewidth=1.0, alpha=0.7)
+    ax2.axhline(50, color="#7c3aed", linestyle="--", linewidth=1.0, alpha=0.7)
+    ax2.set_ylim(0, 105)
+    ax2.set_ylabel("Indicator")
+    ax2.legend(loc="upper left", ncol=2, fontsize=9)
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
+
+    s = ind.loc[signal_date]
+    raw_close = float(raw.loc[signal_date, "close"]) if signal_date in raw.index else math.nan
+    raw_volume = (
+        float(raw_avg_volume20.loc[signal_date])
+        if signal_date in raw_avg_volume20.index else math.nan
+    )
+    fig.suptitle(
+        f"Actual mean-reversion short signal: {symbol}\n"
+        f"Signal {signal_date.date()} | RSI(3) {s['rsi3']:.1f} | "
+        f"ADX(7) {s['adx7']:.1f} | ATR% {s['atr_pct10']:.1f}% | "
+        f"Raw close ${raw_close:,.2f} | 20D avg volume {raw_volume:,.0f}",
+        fontsize=14, fontweight="bold", y=0.98,
+    )
+    fig.text(
+        0.5, 0.012,
+        f"Filled short ${float(trade['entry_price']):,.2f} → "
+        f"covered ${float(trade['exit_price']):,.2f} ({trade['exit_reason']}); "
+        f"net position return {float(trade['net_return']):.2%}. "
+        "Orange=signal, blue=entry, purple=exit.",
+        ha="center", fontsize=10, color="#334155",
+    )
+    fig.tight_layout(rect=(0.02, 0.045, 0.98, 0.93))
+    fig.savefig(
+        outdir / "mean-reversion-short-signal-example.png",
+        dpi=180, bbox_inches="tight",
+    )
+    plt.close(fig)
 
 
 def svg_line(series_map: dict[str, pd.Series], width: int = 960, height: int = 360) -> str:
@@ -491,7 +630,7 @@ def write_report(outdir: Path, meta: dict, scenarios: dict, curves: dict, benchm
     <div class="card"><h2>Results</h2><table><thead><tr><th>Scenario</th><th>Ending</th><th>CAGR</th><th>Max DD</th><th>Sharpe</th><th>Trades</th><th>Win rate</th><th>Profit factor</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>
     <div class="card"><h2>Equity curve</h2>{svg_line(chart_series)}</div>
     <div class="card"><h2>Yearly returns</h2>{yearly_html}</div>
-    <div class="card"><h2>Rules and execution assumptions</h2><ul><li>AMEX/NASDAQ/NYSE current active stocks; ETFs/test issues removed with current Nasdaq Trader directories.</li><li>Raw point-in-time close ≥ $10 and raw 20-day average volume &gt; 500,000. Split/dividend-adjusted OHLC is used for indicators and returns.</li><li>ADX(7) &gt; 50; ATR(10)/close &gt; 5%; last two closes up; RSI(3) &gt; 85.</li><li>Top 10 signals each day by RSI(3). Next-session short limit at the signal close; fill at open when open is above the limit, otherwise at the limit if high touches it.</li><li>Size = 2% equity risk to a 2.5×ATR stop, capped at 10% per position and 100% gross short exposure at entry.</li><li>No stop on entry day. From the next session: stop gap at open or stop intraday; a 4% close profit exits next open; otherwise exit at the second session's close.</li><li>Headline/base cost is 5 bps per side. Commission is otherwise treated as zero. Borrow fees are excluded.</li></ul></div>
+    <div class="card"><h2>Rules and execution assumptions</h2><ul><li>AMEX/NASDAQ/NYSE current active stocks; ETFs/test issues removed with current Nasdaq Trader directories.</li><li>Raw point-in-time close ≥ $10 and raw 20-day average volume &gt; 500,000. Split/dividend-adjusted OHLC is used for indicators and returns.</li><li>ADX(7) &gt; 50; ATR(10)/close &gt; 5%; last two closes up; RSI(3) &gt; 85.</li><li>Top 10 signals each day by RSI(3). Next-session short limit at the signal close; fill at open when open is above the limit, otherwise at the limit if high touches it.</li><li>Size = 2% equity risk to a 2.5×ATR stop, capped at 10% per position and 100% gross short exposure at entry.</li><li>No stop on entry day. From the next session: stop gap at open or stop intraday; a 4% close profit exits next open; otherwise exit at the second session's close.</li><li>User scenario uses 25 bps per side plus 4% annual financing on short market value carried overnight. Stock borrow fees remain excluded.</li></ul></div>
     <div class="card small"><h2>Data audit</h2><pre>{html.escape(json.dumps(meta, indent=2))}</pre></div></main></body></html>"""
     outdir.joinpath("mean-reversion-short-report.html").write_text(report, encoding="utf-8")
     base_trades.to_csv(outdir / "mean-reversion-short-trades.csv", index=False)
@@ -531,14 +670,21 @@ def run(args):
 
     spy = frame_from_bars(client.bars(["SPY"], warmup, end, adjustment="all").get("SPY", []))
     benchmark = benchmark_curve(spy, args.start)
-    scenario_specs = {"Gross / no costs": 0.0, "Base / 5 bps each side": 5.0,
-                      "Stress / 25 bps each side": 25.0}
+    scenario_specs = {
+        "Gross / no costs": (0.0, 0.0),
+        "Base / 5 bps each side": (5.0, 0.0),
+        "Fee 25 bps each side": (25.0, 0.0),
+        "Fee 25 bps each side + 4% financing": (25.0, 0.04),
+    }
     scenario_metrics, curves, trades = {}, {}, {}
-    for name, bps in scenario_specs.items():
-        curve, trade_log, metrics = simulate(orders, trading_days, bps)
+    for name, (bps, financing_rate) in scenario_specs.items():
+        curve, trade_log, metrics = simulate(
+            orders, trading_days, bps, annual_financing_rate=financing_rate
+        )
         scenario_metrics[name], curves[name], trades[name] = metrics, curve, trade_log
 
-    base_curve = curves["Base / 5 bps each side"]
+    primary_name = "Fee 25 bps each side + 4% financing"
+    base_curve = curves[primary_name]
     yearly = pd.DataFrame(index=sorted(set(pd.to_datetime(base_curve.index).year)))
     for name, curve in curves.items():
         temp = curve.copy()
@@ -563,9 +709,19 @@ def run(args):
         "filled_selected_orders": sum(c.filled for c in orders),
         "survivorship_bias": True, "historical_short_availability": False,
         "borrow_fees_included": False, "gross_exposure_cap": 1.0,
+        "primary_fee_rate_per_side": 0.0025,
+        "annual_financing_rate": 0.04,
     }
     write_report(outdir, meta, scenario_metrics, curves, benchmark,
-                 trades["Base / 5 bps each side"], yearly)
+                 trades[primary_name], yearly)
+    primary_trades = trades[primary_name]
+    sample_pool = primary_trades[
+        (primary_trades["net_return"] > 0.02)
+        & (primary_trades["net_return"] < 0.20)
+        & (primary_trades["entry_price"] < 1000)
+    ]
+    sample = sample_pool.iloc[-1] if len(sample_pool) else primary_trades.iloc[0]
+    write_signal_example(client, sample, outdir)
     for name, curve in curves.items():
         safe = name.lower().replace(" ", "-").replace("/", "-")
         curve.to_csv(outdir / f"equity-{safe}.csv")
