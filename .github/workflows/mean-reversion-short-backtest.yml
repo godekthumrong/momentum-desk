@@ -1,0 +1,40 @@
+name: Mean-Reversion Short Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: Start date (current active universe; survivorship-biased)
+        default: "2016-01-01"
+      end:
+        description: End date (blank = latest Alpaca session)
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install --quiet -r requirements.txt
+      - name: Run Mean-Reversion Short backtest on Alpaca SIP
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          SHORT_BT_START: ${{ inputs.start }}
+          SHORT_BT_END: ${{ inputs.end }}
+        run: python mean_reversion_short_backtest.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mean-reversion-short-${{ github.run_number }}
+          path: short-backtest-output/
+          retention-days: 90
+          if-no-files-found: warn
