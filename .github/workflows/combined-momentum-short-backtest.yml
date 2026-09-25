@@ -1,0 +1,49 @@
+name: Combined Momentum + Short Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: Combined test start date
+        default: "2016-01-01"
+      end:
+        description: End date (blank = latest completed Alpaca session)
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install --quiet -r requirements.txt
+      - run: pip install --quiet matplotlib
+      - name: Run full-daily Momentum backtest
+        env:
+          MOMENTUM_HEADLESS: "1"
+          MOMENTUM_FULL_DAILY: "1"
+          MOMENTUM_YEARS: "20"
+        run: python momentum_backtest.py
+      - name: Run Mean-Reversion Short signal history
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          SHORT_BT_START: ${{ inputs.start }}
+          SHORT_BT_END: ${{ inputs.end }}
+        run: python mean_reversion_short_backtest.py
+      - name: Combine the long and short sleeves
+        run: python combined_momentum_short_backtest.py --start "${{ inputs.start }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: combined-momentum-short-${{ github.run_number }}
+          path: combined-backtest-output/
+          retention-days: 90
+          if-no-files-found: warn
