@@ -20,7 +20,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     outputs:
       as_of: ${{ steps.check.outputs.as_of }}
     steps:
@@ -49,6 +49,13 @@ jobs:
           MOMENTUM_BACKTEST_HREF: backtest.html
         run: python momentum_desk.py
 
+      - name: Build separate daily short scanner
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          SHORT_SCANNER_PORTFOLIO_VALUE: ${{ vars.PUBLIC_PORTFOLIO_VALUE || '100000' }}
+        run: python mean_reversion_short_scanner.py
+
       - name: Check the output is real
         id: check
         run: |
@@ -62,6 +69,12 @@ jobs:
           assert p["meta"]["price_source"] == "Alpaca SIP"
           if n < 400:
               sys.exit(f"only {n} names ranked - looks like a partial download")
+          s = json.loads(pathlib.Path("short-scanner.json").read_text())
+          assert s["meta"]["source"] == "Alpaca SIP"
+          assert s["meta"]["universe"] >= 2500
+          assert s["meta"]["fresh"] >= int(s["meta"]["universe"] * 0.90)
+          if s["meta"]["as_of"] != as_of:
+              sys.exit(f"scanner date {s['meta']['as_of']} != momentum date {as_of}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
               fh.write(f"as_of={as_of}\n")
           PY
@@ -70,6 +83,7 @@ jobs:
         run: |
           mkdir -p _site
           cp momentum-desk.html _site/index.html
+          cp short-scanner.html _site/short-scanner.html
           # the backtest page is optional; publish it when a previous manual
           # run has committed one
           [ -f momentum-backtest.html ] && cp momentum-backtest.html _site/backtest.html || true
@@ -89,6 +103,8 @@ jobs:
             momentum-desk.html
             momentum-payload.json
             momentum-data-quality.json
+            short-scanner.html
+            short-scanner.json
           retention-days: 30
           if-no-files-found: warn
 
@@ -127,4 +143,3 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
-
