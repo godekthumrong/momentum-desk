@@ -52,6 +52,7 @@ if _os.environ.get("MOMENTUM_LEVERAGE"):
     LEVERAGE = float(_os.environ["MOMENTUM_LEVERAGE"])
 if _os.environ.get("MOMENTUM_MARGIN_SPREAD"):
     MARGIN_SPREAD_BPS = float(_os.environ["MOMENTUM_MARGIN_SPREAD"])
+FULL_DAILY = _os.environ.get("MOMENTUM_FULL_DAILY", "").lower() in ("1", "true", "yes")
 
 import bisect
 import io
@@ -1466,7 +1467,7 @@ def run_all(prices, spy, current, changes, cfg, log=print, regime=None,
             usize = int(np.median(sizes))
 
         # thin the daily series for transport; keep every point that matters
-        step = max(1, len(net) // 1400)
+        step = 1 if cfg.get("full_daily") else max(1, len(net) // 1400)
         idx = list(range(0, len(net), step))
         if idx[-1] != len(net) - 1:
             idx.append(len(net) - 1)
@@ -1705,6 +1706,7 @@ cfg = {"years": YEARS, "top_n": TOP_N, "lookback": LOOKBACK_DAYS,
        "benchmark": BENCHMARK, "exit_rank": EXIT_RANK, "regime_sma": REGIME_SMA,
        "cash_hedge_ticker": hedge_ticker, "show_biased": SHOW_BIASED,
        "leverage": LEVERAGE, "margin_rate": margin_note}
+cfg["full_daily"] = FULL_DAILY
 payload = run_all(prices, spy, current, changes, cfg, regime=regime,
                   snapshots=snapshots, hedge_ticker=hedge_ticker,
                   leverage=LEVERAGE, fin_daily=fin_daily)

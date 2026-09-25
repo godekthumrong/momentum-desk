@@ -357,7 +357,9 @@ def _tiered_margin_interest(balance: float, calendar_days: int) -> float:
 def simulate(orders: list[Candidate], trading_days: list[str], cost_bps_side: float,
              annual_financing_rate: float = 0.0, ibkr_tiered: bool = False,
              ibkr_margin_interest: bool = False, annual_borrow_rate: float = 0.0,
-             initial_cash: float = 100_000.0) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+             initial_cash: float = 100_000.0,
+             external_daily_returns: pd.Series | dict | None = None,
+             external_label: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     by_entry: dict[str, list[Candidate]] = defaultdict(list)
     for order in orders:
         by_entry[order.order_date].append(order)
@@ -366,8 +368,20 @@ def simulate(orders: list[Candidate], trading_days: list[str], cost_bps_side: fl
     trades: list[dict] = []
     curve: list[dict] = []
     blocked_exposure = blocked_duplicate = 0
+    total_external_pnl = 0.0
 
     for day_i, day in enumerate(trading_days):
+        # Optional 100%-of-equity long sleeve. Its close-to-close return is
+        # credited before today's short executions, which is equivalent to
+        # resetting the long sleeve to 100% of combined equity each day.
+        external_pnl = 0.0
+        if day_i > 0 and external_daily_returns is not None:
+            daily_return = external_daily_returns.get(day, 0.0)
+            if daily_return is not None and np.isfinite(daily_return):
+                previous_equity = float(curve[-1]["equity"])
+                external_pnl = previous_equity * float(daily_return)
+                cash += external_pnl
+                total_external_pnl += external_pnl
         entering = by_entry.get(day, [])
 
         # Targets and stop gaps execute at the open and free capital before new limits.
@@ -489,6 +503,8 @@ def simulate(orders: list[Candidate], trading_days: list[str], cost_bps_side: fl
         "ibkr_tiered_commission": ibkr_tiered,
         "ibkr_margin_interest": ibkr_margin_interest,
         "annual_borrow_rate": annual_borrow_rate,
+        "external_label": external_label,
+        "total_external_pnl": total_external_pnl,
         "initial_balance": initial_cash, "ending_balance": end,
         "cagr": cagr, "max_drawdown": _max_drawdown(curve_df["equity"]), "sharpe": float(sharpe),
         "trades": len(trades_df), "wins": wins, "losses": losses,
