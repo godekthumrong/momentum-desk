@@ -1,3 +1,0 @@
-# Install this only on the computer that runs TWS Paper.
-# The bridge refuses the live TWS port and non-paper account IDs.
-ibapi==9.81.1.post1
