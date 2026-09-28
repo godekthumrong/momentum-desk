@@ -75,6 +75,9 @@ jobs:
           assert s["meta"]["fresh"] >= int(s["meta"]["universe"] * 0.90)
           if s["meta"]["as_of"] != as_of:
               sys.exit(f"scanner date {s['meta']['as_of']} != momentum date {as_of}")
+          dashboard = pathlib.Path("momentum-desk.html").read_text(encoding="utf-8")
+          if 'href="short-scanner.html"' not in dashboard:
+              sys.exit("Momentum Desk is missing the Daily Short Scanner link")
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
               fh.write(f"as_of={as_of}\n")
           PY
