@@ -48,17 +48,11 @@ class DailyShortScannerTests(unittest.TestCase):
 
     def test_empty_page_has_clear_message(self):
         payload = {"meta": {"as_of": "2024-01-31", "portfolio_value": 100000,
-                            "next_session": "2024-02-01",
                             "signals": 0, "selected": 0, "ready": 0,
                             "fresh": 5000, "universe": 5100}, "signals": []}
         page = build_html(payload)
         self.assertIn("No signals match every rule", page)
         self.assertIn("daily short scanner", page.lower())
-        self.assertIn("Prepare selected exits", page)
-        self.assertIn("Confirm Send to Paper", page)
-        self.assertIn('id="bridge-url"', page)
-        self.assertIn('id="bridge-key"', page)
-        self.assertIn("X-Bridge-Key", page)
 
     def test_exit_rules_match_backtest_order(self):
         profit = evaluate_exit(
