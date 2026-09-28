@@ -231,6 +231,24 @@ header.masthead p.sub { color:var(--ink-2); font-size:15px; max-width:54ch; marg
   border-radius:999px; padding:6px 14px; white-space:nowrap;
 }
 .snapshot-badge .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); }
+.masthead-actions {
+  display:flex; align-items:flex-end; gap:10px; flex-wrap:wrap;
+  justify-content:flex-end;
+}
+.scanner-link {
+  display:inline-flex; align-items:center; gap:7px; min-height:36px;
+  padding:7px 13px; border-radius:9px; text-decoration:none;
+  color:#fff; background:var(--accent); border:1px solid var(--accent);
+  font-family:"IBM Plex Sans Condensed", system-ui, sans-serif;
+  font-size:13px; font-weight:650; white-space:nowrap;
+  box-shadow:0 3px 10px rgba(46,123,246,.18);
+}
+.scanner-link:hover { filter:brightness(.96); }
+.scanner-link:focus-visible { outline:3px solid rgba(46,123,246,.25); outline-offset:2px; }
+@media (max-width:640px) {
+  .masthead-actions { width:100%; justify-content:flex-start; align-items:center; }
+  .scanner-link { flex:1; justify-content:center; }
+}
 
 /* ── controls ─────────────────────────────────────────────────── */
 .controls {
@@ -548,7 +566,10 @@ BODY = """
       <h1>Momentum Desk</h1>
       <p class="sub">S&amp;P 500 names ranked by __LOOKBACK__-day quant momentum score, with a watchlist you edit yourself &mdash; sized by weighting each position inversely to its __VOLWIN__-day volatility.</p>
     </div>
-    <span class="snapshot-badge"><span class="dot"></span>Snapshot &middot; __ASOF__ close</span>
+    <div class="masthead-actions">
+      <a class="scanner-link" href="short-scanner.html">Daily Short Scanner <span aria-hidden="true">&rarr;</span></a>
+      <span class="snapshot-badge"><span class="dot"></span>Snapshot &middot; __ASOF__ close</span>
+    </div>
   </header>
 
   <div class="controls">
@@ -1682,4 +1703,3 @@ if OPEN_BROWSER:
 print("\nเสร็จเรียบร้อย")
 if sys.platform == "win32" and sys.stdin.isatty():
     input("\nกด Enter เพื่อปิดหน้าต่าง...")
-
