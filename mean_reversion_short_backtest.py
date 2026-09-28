@@ -359,7 +359,10 @@ def simulate(orders: list[Candidate], trading_days: list[str], cost_bps_side: fl
              ibkr_margin_interest: bool = False, annual_borrow_rate: float = 0.0,
              initial_cash: float = 100_000.0,
              external_daily_returns: pd.Series | dict | None = None,
-             external_label: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+             external_label: str | None = None,
+             short_gross_cap: float = 1.0) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    if not 0.0 <= short_gross_cap <= 1.0:
+        raise ValueError("short_gross_cap must be between 0 and 1")
     by_entry: dict[str, list[Candidate]] = defaultdict(list)
     for order in orders:
         by_entry[order.order_date].append(order)
@@ -416,7 +419,7 @@ def simulate(orders: list[Candidate], trading_days: list[str], cost_bps_side: fl
             risk_per_dollar = (2.5 * c.atr10) / c.entry_price
             desired_fraction = min(0.10, 0.02 / risk_per_dollar) if risk_per_dollar > 0 else 0.0
             desired = max(0.0, equity_open * desired_fraction)
-            capacity = max(0.0, equity_open - gross_open)
+            capacity = max(0.0, equity_open * short_gross_cap - gross_open)
             notional = min(desired, capacity)
             if notional < max(100.0, equity_open * 0.001):
                 blocked_exposure += 1
@@ -503,6 +506,7 @@ def simulate(orders: list[Candidate], trading_days: list[str], cost_bps_side: fl
         "ibkr_tiered_commission": ibkr_tiered,
         "ibkr_margin_interest": ibkr_margin_interest,
         "annual_borrow_rate": annual_borrow_rate,
+        "short_gross_cap": short_gross_cap,
         "external_label": external_label,
         "total_external_pnl": total_external_pnl,
         "initial_balance": initial_cash, "ending_balance": end,
