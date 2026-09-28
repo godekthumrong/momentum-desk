@@ -46,6 +46,19 @@ class MeanReversionShortTests(unittest.TestCase):
         self.assertLessEqual(curve["max_gross"] .max() if "max_gross" in curve else metrics["max_gross_exposure"], 1.0000001)
         self.assertEqual(len(trades), 10)
 
+    def test_simulator_accepts_lower_short_gross_cap(self):
+        rows = [
+            Candidate(str(i), "2024-01-02", "2024-01-03", 100-i, 0.2, 10,
+                      True, 10, 9, "2024-01-04", 9, "time_exit", "close", 9.5)
+            for i in range(10)
+        ]
+        curve, trades, metrics = simulate(
+            rows, ["2024-01-03", "2024-01-04"], 0, short_gross_cap=0.50,
+        )
+        self.assertLessEqual(metrics["max_gross_exposure"], 0.5000001)
+        self.assertEqual(metrics["short_gross_cap"], 0.50)
+        self.assertEqual(len(trades), 5)
+
     def test_ibkr_tiered_commission_minimum_and_per_share_rate(self):
         self.assertAlmostEqual(_trade_commission(100, 50, 0, True), 0.35)
         self.assertAlmostEqual(_trade_commission(1000, 50, 0, True), 3.50)
