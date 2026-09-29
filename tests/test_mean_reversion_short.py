@@ -8,6 +8,8 @@ from mean_reversion_short_backtest import (
     _tiered_margin_interest,
     _trade_commission,
     indicators,
+    reprice_candidate_exits,
+    resolve_exit,
     select_top_orders,
     simulate,
     wilder,
@@ -15,6 +17,34 @@ from mean_reversion_short_backtest import (
 
 
 class MeanReversionShortTests(unittest.TestCase):
+    def test_next_day_limit_does_not_use_entry_day_close(self):
+        day2 = pd.Series({"open": 99.0, "high": 101.0, "low": 95.0, "close": 97.0})
+        price, reason, timing = resolve_exit(100.0, 94.0, 4.0, day2, "next_day_limit")
+        self.assertEqual((price, reason, timing), (96.0, "profit_target", "intraday"))
+
+    def test_next_day_limit_uses_better_open_on_gap_down(self):
+        day2 = pd.Series({"open": 94.0, "high": 96.0, "low": 93.0, "close": 95.0})
+        price, reason, timing = resolve_exit(100.0, 99.0, 4.0, day2, "next_day_limit")
+        self.assertEqual((price, reason, timing), (94.0, "profit_target", "open"))
+
+    def test_next_day_limit_assumes_stop_first_if_both_touch(self):
+        day2 = pd.Series({"open": 100.0, "high": 111.0, "low": 95.0, "close": 98.0})
+        price, reason, timing = resolve_exit(100.0, 100.0, 4.0, day2, "next_day_limit")
+        self.assertEqual((price, reason, timing), (110.0, "stop_loss", "intraday"))
+
+    def test_reprice_candidate_exits_preserves_signal_and_fill(self):
+        candidate = Candidate(
+            "XYZ", "2024-01-02", "2024-01-03", 90, 4, 100,
+            True, 100, 99, "2024-01-04", 97, "time_exit", "close", 99,
+        )
+        frame = pd.DataFrame(
+            [{"open": 99.0, "high": 101.0, "low": 95.0, "close": 97.0}],
+            index=[pd.Timestamp("2024-01-04")],
+        )
+        got = reprice_candidate_exits([candidate], frame, "next_day_limit")[0]
+        self.assertEqual((got.symbol, got.signal_date, got.entry_price), ("XYZ", "2024-01-02", 100))
+        self.assertEqual((got.exit_price, got.exit_reason, got.exit_timing), (96.0, "profit_target", "intraday"))
+
     def test_wilder_uses_sma_seed(self):
         s = pd.Series([1.0, 2.0, 3.0, 4.0])
         got = wilder(s, 3)
