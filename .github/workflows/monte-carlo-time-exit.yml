@@ -41,8 +41,8 @@ jobs:
         run: pip install -r requirements.txt matplotlib
       - name: Run Monte Carlo backtest
         env:
-          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
-          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           SHORT_BT_START: ${{ inputs.start }}
           SHORT_BT_END: ${{ inputs.end }}
           SHORT_BT_OUTPUT: monte-carlo-output
