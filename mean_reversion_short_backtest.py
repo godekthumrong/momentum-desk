@@ -21,7 +21,7 @@ import re
 import statistics
 import time
 from collections import defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -250,8 +250,49 @@ def frame_from_bars(rows: list[dict]) -> pd.DataFrame:
     return data[["open", "high", "low", "close", "volume"]].astype(float)
 
 
+def resolve_exit(entry_price: float, entry_close: float, atr: float,
+                 day2: pd.Series, exit_rule: str) -> tuple[float, str, str]:
+    """Resolve the session-after-entry exit from daily OHLC data.
+
+    ``close_next_open`` is the original rule: an entry-session close at least
+    4% below the fill exits at the following open.  ``next_day_limit`` starts a
+    4%-below-entry buy limit only on the session after entry.  If that daily bar
+    touches both the stop and target, the stop wins as the conservative
+    assumption because daily bars do not reveal the intraday path.
+    """
+    stop = entry_price + 2.5 * atr
+    target = entry_price * 0.96
+    exit_open = float(day2["open"])
+
+    if exit_rule == "close_next_open":
+        if entry_close <= target:
+            return exit_open, "profit_target", "open"
+        if exit_open >= stop:
+            return exit_open, "stop_loss", "open"
+        if float(day2["high"]) >= stop:
+            return stop, "stop_loss", "intraday"
+        return float(day2["close"]), "time_exit", "close"
+
+    if exit_rule != "next_day_limit":
+        raise ValueError(f"Unknown exit rule: {exit_rule}")
+
+    # Both OCA legs become active on the session after entry. Opening gaps are
+    # known to occur before the subsequent high/low and therefore take priority.
+    if exit_open >= stop:
+        return exit_open, "stop_loss", "open"
+    if exit_open <= target:
+        return exit_open, "profit_target", "open"
+    # With daily OHLC, a bar touching both levels has unknown ordering. Apply
+    # the user-selected conservative convention: stop first.
+    if float(day2["high"]) >= stop:
+        return stop, "stop_loss", "intraday"
+    if float(day2["low"]) <= target:
+        return target, "profit_target", "intraday"
+    return float(day2["close"]), "time_exit", "close"
+
+
 def symbol_candidates(symbol: str, frame: pd.DataFrame, raw_frame: pd.DataFrame,
-                      test_start: str) -> list[Candidate]:
+                      test_start: str, exit_rule: str = "close_next_open") -> list[Candidate]:
     if len(frame) < 30:
         return []
     ind = indicators(frame)
@@ -295,18 +336,33 @@ def symbol_candidates(symbol: str, frame: pd.DataFrame, raw_frame: pd.DataFrame,
             day2 = frame.iloc[i + 2]
             exit_date = _iso_day(frame.index[i + 2])
             exit_open = float(day2["open"])
-            if entry_close <= entry_price * 0.96:
-                exit_price, reason, timing = exit_open, "profit_target", "open"
-            elif day2["open"] >= stop:
-                exit_price, reason, timing = exit_open, "stop_loss", "open"
-            elif day2["high"] >= stop:
-                exit_price, reason, timing = stop, "stop_loss", "intraday"
-            else:
-                exit_price, reason, timing = float(day2["close"]), "time_exit", "close"
+            exit_price, reason, timing = resolve_exit(
+                entry_price, entry_close, atr, day2, exit_rule,
+            )
         out.append(Candidate(symbol, _iso_day(frame.index[i]), _iso_day(frame.index[i + 1]),
                              rsi, atr, limit_price, True, entry_price, entry_close,
                              exit_date, float(exit_price), reason, timing, float(exit_open)))
     return out
+
+
+def reprice_candidate_exits(candidates: list[Candidate], frame: pd.DataFrame,
+                            exit_rule: str) -> list[Candidate]:
+    """Reuse identical signals/fills while applying another exit rule."""
+    repriced: list[Candidate] = []
+    for candidate in candidates:
+        if not candidate.filled or candidate.exit_reason == "end_of_data":
+            repriced.append(candidate)
+            continue
+        day2 = frame.loc[pd.Timestamp(candidate.exit_date)]
+        price, reason, timing = resolve_exit(
+            float(candidate.entry_price), float(candidate.entry_close),
+            candidate.atr10, day2, exit_rule,
+        )
+        repriced.append(replace(
+            candidate, exit_price=float(price), exit_reason=reason,
+            exit_timing=timing, exit_open=float(day2["open"]),
+        ))
+    return repriced
 
 
 def select_top_orders(candidates: list[Candidate]) -> tuple[list[Candidate], int]:
@@ -721,7 +777,49 @@ def write_report(outdir: Path, meta: dict, scenarios: dict, curves: dict, benchm
     yearly.to_csv(outdir / "mean-reversion-short-yearly.csv")
 
 
+def write_exit_comparison_report(outdir: Path, metrics: dict[str, dict],
+                                 curves: dict[str, pd.DataFrame]):
+    """Write a focused old-vs-new profit-target comparison."""
+    def pct(value: float) -> str:
+        return f"{value:.2%}"
+
+    rows = []
+    for name, m in metrics.items():
+        pf = "∞" if m["profit_factor"] is None and m["wins"] else (
+            "—" if m["profit_factor"] is None else f'{m["profit_factor"]:.2f}'
+        )
+        reasons = m.get("exit_reasons", {})
+        rows.append(
+            f"<tr><td>{html.escape(name)}</td><td>${m['ending_balance']:,.0f}</td>"
+            f"<td>{pct(m['cagr'])}</td><td>{pct(m['max_drawdown'])}</td>"
+            f"<td>{m['sharpe']:.2f}</td><td>{m['trades']:,}</td>"
+            f"<td>{pct(m['win_rate'])}</td><td>{pf}</td>"
+            f"<td>{reasons.get('profit_target', 0):,}</td>"
+            f"<td>{reasons.get('stop_loss', 0):,}</td>"
+            f"<td>{reasons.get('time_exit', 0):,}</td></tr>"
+        )
+
+    log_curves = {
+        name: np.log(curve["equity"] / float(metrics[name]["initial_balance"])) * 100.0
+        for name, curve in curves.items()
+    }
+    chart = svg_line(log_curves, width=1000, height=420)
+    report = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Short Profit-Target Comparison</title><style>
+    body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#f1f5f9;color:#0f172a}}main{{max-width:1120px;margin:auto;padding:28px}}.card{{background:white;border-radius:16px;padding:22px;margin:16px 0;box-shadow:0 1px 4px #cbd5e1}}h1{{margin:.1em 0}}table{{border-collapse:collapse;width:100%;font-size:14px}}th,td{{padding:9px;border-bottom:1px solid #e2e8f0;text-align:right}}th:first-child,td:first-child{{text-align:left}}.small{{color:#475569;font-size:13px}}svg{{width:100%;height:auto}}code{{background:#e2e8f0;padding:2px 5px;border-radius:4px}}
+    </style></head><body><main><h1>Short exit: old rule vs −4% Buy Limit</h1>
+    <div class="card"><h2>Same signals, sizing and costs</h2><table><thead><tr><th>Rule</th><th>Ending balance</th><th>CAGR</th><th>Max DD</th><th>Sharpe</th><th>Trades</th><th>Win rate</th><th>Profit factor</th><th>Targets</th><th>Stops</th><th>Time exits</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>
+    <div class="card"><h2>Cumulative log return</h2>{chart}</div>
+    <div class="card"><h2>Execution assumptions</h2><ul><li><strong>Old:</strong> if the entry-session close is at least 4% below the fill, cover at the next session's actual open; otherwise use the next-session stop and time exit.</li><li><strong>New:</strong> do not use a target on the entry session. On the next session, place a buy limit at 4% below entry alongside the stop; if neither fills, cover at the close.</li><li>If the next-session daily bar touches both stop and target, count the stop first. A gap through either level fills at the actual open.</li><li>Both use IBKR Tiered commission, modeled margin interest, 0.25% annual borrow cost, and a 100% gross short cap.</li></ul><p class="small">Daily OHLC cannot reveal the intraday order of a high and low. Stop-first is intentionally conservative.</p></div>
+    </main></body></html>"""
+    outdir.joinpath("profit-target-comparison.html").write_text(report, encoding="utf-8")
+
+
 def run(args):
+    def json_default(value):
+        if isinstance(value, np.generic):
+            return value.item()
+        raise TypeError(f"Not JSON serializable: {type(value).__name__}")
+
     outdir = Path(args.output)
     outdir.mkdir(parents=True, exist_ok=True)
     client = Alpaca()
@@ -731,6 +829,7 @@ def run(args):
     warmup = _iso_day(pd.Timestamp(args.start) - pd.Timedelta(days=120))
     end = args.end or _iso_day(pd.Timestamp.now(tz="UTC"))
     all_candidates: list[Candidate] = []
+    limit_candidates: list[Candidate] = []
     observed_days: set[str] = set()
     symbols_with_data = 0
     batch_size = args.batch_size
@@ -744,10 +843,19 @@ def run(args):
             if not frame.empty:
                 symbols_with_data += 1
                 observed_days.update(_iso_day(d) for d in frame.loc[pd.Timestamp(args.start):].index)
-                all_candidates.extend(symbol_candidates(symbol, frame, raw_frame, args.start))
+                legacy = symbol_candidates(
+                    symbol, frame, raw_frame, args.start, "close_next_open"
+                )
+                all_candidates.extend(legacy)
+                limit_candidates.extend(
+                    reprice_candidate_exits(legacy, frame, "next_day_limit")
+                )
         print(f"Bars {min(offset+batch_size, len(universe)):,}/{len(universe):,}; candidates {len(all_candidates):,}")
 
     orders, raw_signal_count = select_top_orders(all_candidates)
+    limit_orders, limit_signal_count = select_top_orders(limit_candidates)
+    if raw_signal_count != limit_signal_count or len(orders) != len(limit_orders):
+        raise RuntimeError("Exit-rule comparison produced different signal/order counts")
     trading_days = sorted(d for d in observed_days if args.start <= d <= end)
     if not trading_days:
         raise RuntimeError("No trading days returned")
@@ -760,6 +868,12 @@ def run(args):
     }
     with gzip.open(outdir / "mean-reversion-short-orders.json.gz", "wt", encoding="utf-8") as handle:
         json.dump(cache, handle, separators=(",", ":"))
+    limit_cache = {
+        "trading_days": trading_days,
+        "orders": [asdict(order) for order in limit_orders],
+    }
+    with gzip.open(outdir / "profit-target-limit-orders.json.gz", "wt", encoding="utf-8") as handle:
+        json.dump(limit_cache, handle, separators=(",", ":"))
 
     scenario_specs = {
         "Gross / no costs": {},
@@ -777,6 +891,18 @@ def run(args):
 
     primary_name = "IBKR Tiered + margin + 0.25% borrow"
     base_curve = curves[primary_name]
+    limit_curve, limit_trades, limit_metrics = simulate(
+        limit_orders, trading_days, 0.0,
+        ibkr_tiered=True, ibkr_margin_interest=True, annual_borrow_rate=0.0025,
+    )
+    comparison_names = {
+        "Old: −4% close → next open": scenario_metrics[primary_name],
+        "New: next-day −4% Buy Limit": limit_metrics,
+    }
+    comparison_curves = {
+        "Old: −4% close → next open": base_curve,
+        "New: next-day −4% Buy Limit": limit_curve,
+    }
     yearly = pd.DataFrame(index=sorted(set(pd.to_datetime(base_curve.index).year)))
     for name, curve in curves.items():
         temp = curve.copy()
@@ -811,6 +937,27 @@ def run(args):
     }
     write_report(outdir, meta, scenario_metrics, curves, benchmark,
                  trades[primary_name], yearly)
+    write_exit_comparison_report(outdir, comparison_names, comparison_curves)
+    limit_trades.to_csv(outdir / "profit-target-limit-trades.csv", index=False)
+    comparison_equity = pd.DataFrame({
+        "old_equity": base_curve["equity"],
+        "new_limit_equity": limit_curve["equity"],
+    })
+    comparison_equity.to_csv(outdir / "profit-target-comparison-equity.csv")
+    comparison_result = {
+        "assumptions": {
+            "old": "entry-day close <= 96% of fill; cover next open",
+            "new": "no entry-day target; next-day buy limit at 96% of fill",
+            "same_day_both_levels": "stop first",
+            "gap_fill": "actual open",
+        },
+        "old": scenario_metrics[primary_name],
+        "new": limit_metrics,
+    }
+    outdir.joinpath("profit-target-comparison-results.json").write_text(
+        json.dumps(comparison_result, indent=2, allow_nan=False, default=json_default),
+        encoding="utf-8",
+    )
     primary_trades = trades[primary_name]
     sample_pool = primary_trades[
         (primary_trades["net_return"] > 0.02)
@@ -823,10 +970,6 @@ def run(args):
         safe = name.lower().replace(" ", "-").replace("/", "-")
         curve.to_csv(outdir / f"equity-{safe}.csv")
     result = {"meta": meta, "scenarios": scenario_metrics}
-    def json_default(value):
-        if isinstance(value, np.generic):
-            return value.item()
-        raise TypeError(f"Not JSON serializable: {type(value).__name__}")
     rendered = json.dumps(result, indent=2, allow_nan=False, default=json_default)
     outdir.joinpath("mean-reversion-short-results.json").write_text(rendered, encoding="utf-8")
     print(rendered)
