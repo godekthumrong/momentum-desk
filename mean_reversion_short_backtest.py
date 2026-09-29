@@ -255,8 +255,9 @@ def resolve_exit(entry_price: float, entry_close: float, atr: float,
     """Resolve the session-after-entry exit from daily OHLC data.
 
     ``close_next_open`` is the original rule: an entry-session close at least
-    4% below the fill exits at the following open.  ``next_day_limit`` starts a
-    4%-below-entry buy limit only on the session after entry.  If that daily bar
+    4% below the fill exits at the following open. ``hybrid_close_and_limit``
+    preserves that close-to-next-open exit and, when it does not trigger, adds
+    a 4%-below-entry buy limit on the session after entry. If that daily bar
     touches both the stop and target, the stop wins as the conservative
     assumption because daily bars do not reveal the intraday path.
     """
@@ -273,11 +274,16 @@ def resolve_exit(entry_price: float, entry_close: float, atr: float,
             return stop, "stop_loss", "intraday"
         return float(day2["close"]), "time_exit", "close"
 
-    if exit_rule != "next_day_limit":
+    if exit_rule != "hybrid_close_and_limit":
         raise ValueError(f"Unknown exit rule: {exit_rule}")
 
-    # Both OCA legs become active on the session after entry. Opening gaps are
-    # known to occur before the subsequent high/low and therefore take priority.
+    # Preserve the original entry-session close confirmation. The next open is
+    # an actual market fill and can gap through the 4% threshold either way.
+    if entry_close <= target:
+        return exit_open, "profit_target", "open"
+
+    # Otherwise both OCA legs become active on the session after entry. Opening
+    # gaps are known to occur before the subsequent high/low and take priority.
     if exit_open >= stop:
         return exit_open, "stop_loss", "open"
     if exit_open <= target:
@@ -806,10 +812,10 @@ def write_exit_comparison_report(outdir: Path, metrics: dict[str, dict],
     chart = svg_line(log_curves, width=1000, height=420)
     report = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Short Profit-Target Comparison</title><style>
     body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#f1f5f9;color:#0f172a}}main{{max-width:1120px;margin:auto;padding:28px}}.card{{background:white;border-radius:16px;padding:22px;margin:16px 0;box-shadow:0 1px 4px #cbd5e1}}h1{{margin:.1em 0}}table{{border-collapse:collapse;width:100%;font-size:14px}}th,td{{padding:9px;border-bottom:1px solid #e2e8f0;text-align:right}}th:first-child,td:first-child{{text-align:left}}.small{{color:#475569;font-size:13px}}svg{{width:100%;height:auto}}code{{background:#e2e8f0;padding:2px 5px;border-radius:4px}}
-    </style></head><body><main><h1>Short exit: old rule vs −4% Buy Limit</h1>
+    </style></head><body><main><h1>Short exit: old rule vs hybrid −4% Buy Limit</h1>
     <div class="card"><h2>Same signals, sizing and costs</h2><table><thead><tr><th>Rule</th><th>Ending balance</th><th>CAGR</th><th>Max DD</th><th>Sharpe</th><th>Trades</th><th>Win rate</th><th>Profit factor</th><th>Targets</th><th>Stops</th><th>Time exits</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>
     <div class="card"><h2>Cumulative log return</h2>{chart}</div>
-    <div class="card"><h2>Execution assumptions</h2><ul><li><strong>Old:</strong> if the entry-session close is at least 4% below the fill, cover at the next session's actual open; otherwise use the next-session stop and time exit.</li><li><strong>New:</strong> do not use a target on the entry session. On the next session, place a buy limit at 4% below entry alongside the stop; if neither fills, cover at the close.</li><li>If the next-session daily bar touches both stop and target, count the stop first. A gap through either level fills at the actual open.</li><li>Both use IBKR Tiered commission, modeled margin interest, 0.25% annual borrow cost, and a 100% gross short cap.</li></ul><p class="small">Daily OHLC cannot reveal the intraday order of a high and low. Stop-first is intentionally conservative.</p></div>
+    <div class="card"><h2>Execution assumptions</h2><ul><li><strong>Old:</strong> if the entry-session close is at least 4% below the fill, cover at the next session's actual open; otherwise use the next-session stop and time exit.</li><li><strong>New hybrid:</strong> preserve that close-to-next-open exit. If it does not trigger, place a next-session buy limit at 4% below entry alongside the stop; if neither fills, cover at the close.</li><li>If the next-session daily bar touches both stop and target, count the stop first. A gap through either level fills at the actual open.</li><li>Both use IBKR Tiered commission, modeled margin interest, 0.25% annual borrow cost, and a 100% gross short cap.</li></ul><p class="small">Daily OHLC cannot reveal the intraday order of a high and low. Stop-first is intentionally conservative.</p></div>
     </main></body></html>"""
     outdir.joinpath("profit-target-comparison.html").write_text(report, encoding="utf-8")
 
@@ -848,7 +854,7 @@ def run(args):
                 )
                 all_candidates.extend(legacy)
                 limit_candidates.extend(
-                    reprice_candidate_exits(legacy, frame, "next_day_limit")
+                    reprice_candidate_exits(legacy, frame, "hybrid_close_and_limit")
                 )
         print(f"Bars {min(offset+batch_size, len(universe)):,}/{len(universe):,}; candidates {len(all_candidates):,}")
 
@@ -872,7 +878,7 @@ def run(args):
         "trading_days": trading_days,
         "orders": [asdict(order) for order in limit_orders],
     }
-    with gzip.open(outdir / "profit-target-limit-orders.json.gz", "wt", encoding="utf-8") as handle:
+    with gzip.open(outdir / "profit-target-hybrid-orders.json.gz", "wt", encoding="utf-8") as handle:
         json.dump(limit_cache, handle, separators=(",", ":"))
 
     scenario_specs = {
@@ -897,11 +903,11 @@ def run(args):
     )
     comparison_names = {
         "Old: −4% close → next open": scenario_metrics[primary_name],
-        "New: next-day −4% Buy Limit": limit_metrics,
+        "New hybrid: close/open + next-day −4% Buy Limit": limit_metrics,
     }
     comparison_curves = {
         "Old: −4% close → next open": base_curve,
-        "New: next-day −4% Buy Limit": limit_curve,
+        "New hybrid: close/open + next-day −4% Buy Limit": limit_curve,
     }
     yearly = pd.DataFrame(index=sorted(set(pd.to_datetime(base_curve.index).year)))
     for name, curve in curves.items():
@@ -938,7 +944,7 @@ def run(args):
     write_report(outdir, meta, scenario_metrics, curves, benchmark,
                  trades[primary_name], yearly)
     write_exit_comparison_report(outdir, comparison_names, comparison_curves)
-    limit_trades.to_csv(outdir / "profit-target-limit-trades.csv", index=False)
+    limit_trades.to_csv(outdir / "profit-target-hybrid-trades.csv", index=False)
     comparison_equity = pd.DataFrame({
         "old_equity": base_curve["equity"],
         "new_limit_equity": limit_curve["equity"],
@@ -947,7 +953,7 @@ def run(args):
     comparison_result = {
         "assumptions": {
             "old": "entry-day close <= 96% of fill; cover next open",
-            "new": "no entry-day target; next-day buy limit at 96% of fill",
+            "new": "entry-day close <= 96% exits next open; otherwise next-day buy limit at 96% of fill",
             "same_day_both_levels": "stop first",
             "gap_fill": "actual open",
         },
