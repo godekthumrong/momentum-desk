@@ -17,19 +17,19 @@ from mean_reversion_short_backtest import (
 
 
 class MeanReversionShortTests(unittest.TestCase):
-    def test_next_day_limit_does_not_use_entry_day_close(self):
+    def test_hybrid_preserves_entry_close_to_next_open_exit(self):
         day2 = pd.Series({"open": 99.0, "high": 101.0, "low": 95.0, "close": 97.0})
-        price, reason, timing = resolve_exit(100.0, 94.0, 4.0, day2, "next_day_limit")
-        self.assertEqual((price, reason, timing), (96.0, "profit_target", "intraday"))
+        price, reason, timing = resolve_exit(100.0, 94.0, 4.0, day2, "hybrid_close_and_limit")
+        self.assertEqual((price, reason, timing), (99.0, "profit_target", "open"))
 
-    def test_next_day_limit_uses_better_open_on_gap_down(self):
+    def test_hybrid_uses_better_open_on_gap_down(self):
         day2 = pd.Series({"open": 94.0, "high": 96.0, "low": 93.0, "close": 95.0})
-        price, reason, timing = resolve_exit(100.0, 99.0, 4.0, day2, "next_day_limit")
+        price, reason, timing = resolve_exit(100.0, 99.0, 4.0, day2, "hybrid_close_and_limit")
         self.assertEqual((price, reason, timing), (94.0, "profit_target", "open"))
 
-    def test_next_day_limit_assumes_stop_first_if_both_touch(self):
+    def test_hybrid_assumes_stop_first_if_both_touch(self):
         day2 = pd.Series({"open": 100.0, "high": 111.0, "low": 95.0, "close": 98.0})
-        price, reason, timing = resolve_exit(100.0, 100.0, 4.0, day2, "next_day_limit")
+        price, reason, timing = resolve_exit(100.0, 100.0, 4.0, day2, "hybrid_close_and_limit")
         self.assertEqual((price, reason, timing), (110.0, "stop_loss", "intraday"))
 
     def test_reprice_candidate_exits_preserves_signal_and_fill(self):
@@ -41,7 +41,7 @@ class MeanReversionShortTests(unittest.TestCase):
             [{"open": 99.0, "high": 101.0, "low": 95.0, "close": 97.0}],
             index=[pd.Timestamp("2024-01-04")],
         )
-        got = reprice_candidate_exits([candidate], frame, "next_day_limit")[0]
+        got = reprice_candidate_exits([candidate], frame, "hybrid_close_and_limit")[0]
         self.assertEqual((got.symbol, got.signal_date, got.entry_price), ("XYZ", "2024-01-02", 100))
         self.assertEqual((got.exit_price, got.exit_reason, got.exit_timing), (96.0, "profit_target", "intraday"))
 
