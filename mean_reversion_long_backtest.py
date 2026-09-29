@@ -394,7 +394,7 @@ def run(args) -> None:
         raise RuntimeError("No trading days returned")
     with gzip.open(outdir / "mean-reversion-long-orders.json.gz", "wt", encoding="utf-8") as handle:
         json.dump({"trading_days": trading_days, "orders": [asdict(x) for x in orders]},
-                  handle, separators=(",", ":"))
+                  handle, separators=(",", ":"), default=json_default)
 
     scenario_specs = {"Gross / no costs": False, "IBKR Tiered": True}
     scenarios, curves, logs = {}, {}, {}
