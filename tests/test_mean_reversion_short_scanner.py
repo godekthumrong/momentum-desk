@@ -28,7 +28,7 @@ class DailyShortScannerTests(unittest.TestCase):
         self.assertEqual(row["limit_price"], 100.0)
         # Adjusted ATR is scaled to the current raw-price level: 4 * 100 / 50.
         self.assertEqual(row["atr10_raw"], 8.0)
-        self.assertEqual(row["estimated_stop"], 120.0)
+        self.assertEqual(row["sizing_distance"], 20.0)
         self.assertLessEqual(row["allocation_pct"], 10.0)
         self.assertEqual(row["borrow_status"], "ready")
 
@@ -54,23 +54,57 @@ class DailyShortScannerTests(unittest.TestCase):
         self.assertIn("No signals match every rule", page)
         self.assertIn("daily short scanner", page.lower())
 
-    def test_exit_rules_match_backtest_order(self):
-        profit = evaluate_exit(
-            "2024-01-02", 100, 4,
+    def test_order_plan_columns_follow_ticker(self):
+        payload = {"meta": {"as_of": "2024-01-31", "portfolio_value": 100000,
+                            "signals": 0, "selected": 0, "ready": 0,
+                            "fresh": 5000, "universe": 5100}, "signals": []}
+        page = build_html(payload)
+        expected = (
+            "<th>Rank</th><th>Ticker</th><th>Limit</th><th>Allocation</th>"
+            "<th>Shares</th><th>Sizing dist.</th>"
+        )
+        self.assertIn(expected, page)
+
+    def test_trade_journal_is_browser_local_and_has_return_stats(self):
+        payload = {"meta": {"as_of": "2024-01-31", "portfolio_value": 100000,
+                            "signals": 0, "selected": 0, "ready": 0,
+                            "fresh": 5000, "universe": 5100}, "signals": [], "market": {}}
+        page = build_html(payload)
+        self.assertIn("short-scanner-journal-v1", page)
+        self.assertIn("Cumulative portfolio return", page)
+        self.assertIn("Profit factor", page)
+        self.assertIn("Max drawdown", page)
+        self.assertIn("Export CSV", page)
+
+    def test_watchlist_uses_time_exit_only_columns(self):
+        payload = {"meta": {"as_of": "2024-01-31", "portfolio_value": 100000,
+                            "signals": 0, "selected": 0, "ready": 0,
+                            "fresh": 5000, "universe": 5100}, "signals": [], "market": {}}
+        page = build_html(payload)
+        self.assertIn(
+            "<th>Entry</th><th>Latest close</th><th>Open P&amp;L</th>", page
+        )
+        self.assertNotIn("<th>Stop</th>", page)
+        self.assertNotIn("<th>Target</th>", page)
+        self.assertNotIn('id="w-atr"', page)
+
+    def test_time_exit_ignores_stop_and_profit_target_levels(self):
+        large_entry_day_profit = evaluate_exit(
+            "2024-01-02", 100,
             [["2024-01-02", 100, 102, 94, 95], ["2024-01-03", 94, 96, 92, 93]],
         )
-        self.assertEqual(profit["label"], "Profit target · cover at open")
-        self.assertEqual(profit["exit_price"], 94)
+        self.assertEqual(large_entry_day_profit["label"], "Time exit at close")
+        self.assertEqual(large_entry_day_profit["exit_price"], 93)
 
-        stopped = evaluate_exit(
-            "2024-01-02", 100, 4,
+        stop_level_breach = evaluate_exit(
+            "2024-01-02", 100,
             [["2024-01-02", 100, 105, 98, 101], ["2024-01-03", 105, 111, 103, 106]],
         )
-        self.assertEqual(stopped["label"], "Stop hit intraday")
-        self.assertEqual(stopped["exit_price"], 110)
+        self.assertEqual(stop_level_breach["label"], "Time exit at close")
+        self.assertEqual(stop_level_breach["exit_price"], 106)
 
         timed = evaluate_exit(
-            "2024-01-02", 100, 4,
+            "2024-01-02", 100,
             [["2024-01-02", 100, 105, 98, 101], ["2024-01-03", 101, 106, 97, 99]],
         )
         self.assertEqual(timed["label"], "Time exit at close")
