@@ -1,0 +1,59 @@
+name: Monte Carlo Hybrid Short Exits
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: Backtest start date
+        required: true
+        default: "2016-01-01"
+      end:
+        description: Backtest end date (blank means latest)
+        required: false
+        default: ""
+      runs:
+        description: Monte Carlo runs
+        required: true
+        default: "1000"
+      entry_probability:
+        description: Independent entry probability
+        required: true
+        default: "0.5"
+      max_positions:
+        description: Maximum simultaneous short positions
+        required: true
+        default: "10"
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt matplotlib
+      - name: Run Monte Carlo hybrid-exit backtest
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          SHORT_BT_START: ${{ inputs.start }}
+          SHORT_BT_END: ${{ inputs.end }}
+          SHORT_BT_OUTPUT: monte-carlo-hybrid-output
+          MONTE_CARLO_RUNS: ${{ inputs.runs }}
+          MC_ENTRY_PROBABILITY: ${{ inputs.entry_probability }}
+          MC_MAX_POSITIONS: ${{ inputs.max_positions }}
+        run: python monte_carlo_hybrid_exit.py
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: monte-carlo-hybrid-short-${{ github.run_number }}
+          path: monte-carlo-hybrid-output/
+          if-no-files-found: error
+          retention-days: 30
