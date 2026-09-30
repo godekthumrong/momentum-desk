@@ -99,33 +99,19 @@ def indicators(frame: pd.DataFrame) -> pd.DataFrame:
     }, index=frame.index)
 
 
-def _long_exit(frame: pd.DataFrame, entry_i: int, entry_price: float,
-               atr10: float) -> tuple[str, float, str, str, float, int]:
-    """Resolve exit using daily OHLC and the book's no-entry-day-stop rule."""
-    stop = entry_price - 2.5 * atr10
-    last_i = min(entry_i + 3, len(frame) - 1)  # entry session is holding day 1
-
-    for i in range(entry_i + 1, last_i + 1):
-        row = frame.iloc[i]
-        day_open = float(row["open"])
-
-        # A +3% close from the prior session exits at this session's open.
-        prior_close = float(frame.iloc[i - 1]["close"])
-        if prior_close >= entry_price * 1.03:
-            return _iso_day(frame.index[i]), day_open, "profit_target", "open", day_open, i - entry_i + 1
-
-        # The protective stop begins only after the entry session's close.
-        if day_open <= stop:
-            return _iso_day(frame.index[i]), day_open, "stop_loss", "open", day_open, i - entry_i + 1
-        if float(row["low"]) <= stop:
-            return _iso_day(frame.index[i]), stop, "stop_loss", "intraday", day_open, i - entry_i + 1
-
-        if i == entry_i + 3:
-            return _iso_day(frame.index[i]), float(row["close"]), "time_exit", "close", day_open, 4
-
-    row = frame.iloc[last_i]
-    return (_iso_day(frame.index[last_i]), float(row["close"]), "end_of_data",
-            "close", float(row["open"]), last_i - entry_i + 1)
+def _long_exit(frame: pd.DataFrame, entry_i: int) -> tuple[str, float, str, str, float, int]:
+    """Exit only at the third holding session's close; entry session is day 1."""
+    exit_i = min(entry_i + 2, len(frame) - 1)
+    row = frame.iloc[exit_i]
+    complete_holding_period = exit_i == entry_i + 2
+    return (
+        _iso_day(frame.index[exit_i]),
+        float(row["close"]),
+        "time_exit" if complete_holding_period else "end_of_data",
+        "close",
+        float(row["open"]),
+        exit_i - entry_i + 1,
+    )
 
 
 def symbol_candidates(symbol: str, frame: pd.DataFrame, raw_frame: pd.DataFrame,
@@ -169,9 +155,7 @@ def symbol_candidates(symbol: str, frame: pd.DataFrame, raw_frame: pd.DataFrame,
             ))
             continue
 
-        exit_date, exit_price, reason, timing, exit_open, holding_days = _long_exit(
-            frame, i + 1, entry_price, atr10
-        )
+        exit_date, exit_price, reason, timing, exit_open, holding_days = _long_exit(frame, i + 1)
         exit_i = frame.index.get_loc(pd.Timestamp(exit_date))
         held = frame.iloc[i + 1:exit_i + 1]
         daily_opens = {_iso_day(d): float(v) for d, v in held["open"].items()}
@@ -223,17 +207,6 @@ def simulate(orders: list[Candidate], trading_days: list[str],
     blocked_slots = blocked_cash = blocked_duplicate = 0
 
     for day in trading_days:
-        # MOO profit exits and stop gaps free cash before new limit entries.
-        for symbol, pos in list(positions.items()):
-            c = pos.candidate
-            if c.exit_date == day and c.exit_timing == "open":
-                proceeds = pos.shares * float(c.exit_price)
-                exit_cost = _trade_commission(pos.shares, float(c.exit_price), 0.0, ibkr_tiered)
-                cash += proceeds - exit_cost
-                pnl = proceeds - pos.entry_notional - pos.entry_cost - exit_cost
-                trades.append(_trade_row(pos, exit_cost, pnl))
-                del positions[symbol]
-
         for c in by_entry.get(day, []):
             if not c.filled:
                 continue
@@ -270,10 +243,10 @@ def simulate(orders: list[Candidate], trading_days: list[str],
             cash -= notional + entry_cost
             positions[c.symbol] = Position(c, shares, notional, entry_cost)
 
-        # Intraday stops and fourth-session MOC exits happen after entries.
+        # Third-session market-on-close exits happen after new entries.
         for symbol, pos in list(positions.items()):
             c = pos.candidate
-            if c.exit_date == day and c.exit_timing in ("intraday", "close"):
+            if c.exit_date == day and c.exit_timing == "close":
                 proceeds = pos.shares * float(c.exit_price)
                 exit_cost = _trade_commission(pos.shares, float(c.exit_price), 0.0, ibkr_tiered)
                 cash += proceeds - exit_cost
@@ -351,7 +324,7 @@ def write_report(outdir: Path, meta: dict, scenarios: dict,
     <div class="card"><h2>Results</h2><table><thead><tr><th>Scenario</th><th>Ending</th><th>CAGR</th><th>Max DD</th><th>Sharpe</th><th>Trades</th><th>Win rate</th><th>Profit factor</th><th>Commission</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>
     <div class="card"><h2>Equity curve</h2>{svg_line(chart_series)}</div>
     <div class="card"><h2>Yearly returns</h2>{yearly_html}</div>
-    <div class="card"><h2>Rules</h2><ul><li>Current active AMEX/NASDAQ/NYSE common stocks; current ETFs and test issues excluded.</li><li>Raw close &gt; $1; raw 50-day average volume &gt; 500,000; raw 50-day average dollar volume ≥ $2.5M.</li><li>Adjusted close &gt; SMA(150); ADX(7) &gt; 45; ATR(10)% &gt; 4%; RSI(3) &lt; 30.</li><li>Rank lowest RSI(3) first; place at most 10 one-session limit buys at 4% below signal close.</li><li>Fill at the open when open ≤ limit; otherwise at limit when the day's low touches it.</li><li>Risk 2% of current equity to a 2.5×ATR stop; cap each position at 10% of equity; whole shares; no leverage; maximum 10 open positions.</li><li>No stop on entry day. Thereafter: 2.5×ATR stop; a close ≥ 3% above entry exits next open; otherwise exit at the fourth session's close.</li><li>Primary costs: IBKR Pro Tiered $0.0035/share, $0.35 minimum/order, 1% maximum of trade value. Variable exchange and regulatory pass-through fees are excluded.</li></ul></div>
+    <div class="card"><h2>Rules</h2><ul><li>Current active AMEX/NASDAQ/NYSE common stocks; current ETFs and test issues excluded.</li><li>Raw close &gt; $1; raw 50-day average volume &gt; 500,000; raw 50-day average dollar volume ≥ $2.5M.</li><li>Adjusted close &gt; SMA(150); ADX(7) &gt; 45; ATR(10)% &gt; 4%; RSI(3) &lt; 30.</li><li>Rank lowest RSI(3) first; place at most 10 one-session limit buys at 4% below signal close.</li><li>Fill at the open when open ≤ limit; otherwise at limit when the day's low touches it.</li><li>Size positions at 2% of current equity divided by 2.5×ATR; cap each position at 10% of equity; whole shares; no leverage; maximum 10 open positions.</li><li>Only exit: sell at the third holding session's close, counting the entry session as day 1. No stop loss and no profit target.</li><li>Primary costs: IBKR Pro Tiered $0.0035/share, $0.35 minimum/order, 1% maximum of trade value. Variable exchange and regulatory pass-through fees are excluded.</li></ul></div>
     <div class="card small"><h2>Audit</h2><pre>{html.escape(json.dumps(meta, indent=2))}</pre></div></main></body></html>"""
     (outdir / "mean-reversion-long-report.html").write_text(report, encoding="utf-8")
     trades.to_csv(outdir / "mean-reversion-long-trades.csv", index=False)
@@ -424,7 +397,7 @@ def run(args) -> None:
         "survivorship_bias": True, "historical_delisted_stocks_included": False,
         "commission_model": "IBKR Pro Tiered: $0.0035/share, $0.35 minimum/order, 1% cap",
         "exchange_and_regulatory_pass_through_fees_included": False,
-        "daily_bar_ambiguity": "stop has priority after an open exit is checked; no stop on entry day",
+        "exit_rule": "close of holding session 3 only; entry session is day 1; no stop or profit target",
     }
     primary = "IBKR Tiered"
     write_report(outdir, meta, scenarios, curves, benchmark, logs[primary], yearly)
