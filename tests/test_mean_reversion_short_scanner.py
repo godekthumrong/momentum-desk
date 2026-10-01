@@ -88,6 +88,17 @@ class DailyShortScannerTests(unittest.TestCase):
         self.assertNotIn("<th>Target</th>", page)
         self.assertNotIn('id="w-atr"', page)
 
+    def test_signal_can_be_added_pending_without_opening_fill_form(self):
+        payload = {"meta": {"as_of": "2024-01-31", "portfolio_value": 100000,
+                            "signals": 0, "selected": 0, "ready": 0,
+                            "fresh": 5000, "universe": 5100}, "signals": [], "market": {}}
+        page = build_html(payload)
+        self.assertIn("no form entry required", page)
+        self.assertIn("shares:shares,plannedLimit:r.limit_price", page)
+        self.assertIn("if(old)return", page)
+        self.assertNotIn("saveWatch()}}editWatch(r.symbol)", page)
+        self.assertIn("watched?'Added':'Watch'", page)
+
     def test_time_exit_ignores_stop_and_profit_target_levels(self):
         large_entry_day_profit = evaluate_exit(
             "2024-01-02", 100,
