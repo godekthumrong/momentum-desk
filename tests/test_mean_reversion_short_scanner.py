@@ -97,7 +97,12 @@ class DailyShortScannerTests(unittest.TestCase):
         self.assertIn("shares:shares,plannedLimit:r.limit_price", page)
         self.assertIn("if(old)return", page)
         self.assertNotIn("saveWatch()}}editWatch(r.symbol)", page)
-        self.assertIn("watched?'Added':'Watch'", page)
+        self.assertIn(
+            "shown=matching.filter(function(r){return !watch.some", page
+        )
+        self.assertIn(
+            "All matching signals are already in the watchlist.", page
+        )
 
     def test_time_exit_ignores_stop_and_profit_target_levels(self):
         large_entry_day_profit = evaluate_exit(
