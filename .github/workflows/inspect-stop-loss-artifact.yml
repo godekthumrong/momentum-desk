@@ -1,0 +1,23 @@
+name: Inspect Stop Loss Artifact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download existing artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p downloaded
+          gh run download 37020495368 --repo ${{ github.repository }} --name stop-loss-only-short-1 --dir downloaded
+      - name: Print stop-loss-only metrics
+        run: |
+          echo '=== STOP LOSS ONLY RESULTS ==='
+          cat downloaded/stop-loss-only-results.json
